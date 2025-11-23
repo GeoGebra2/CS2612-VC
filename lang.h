@@ -22,7 +22,8 @@
 enum IntBinOpType {
   T_PLUS,
   T_MINUS,
-  T_MUL
+  T_MUL,
+  T_DIV
 };
 
 /*
@@ -209,13 +210,15 @@ struct expr_bool * CloneExprBool(struct expr_bool *);
 struct expr_int * SubstInt(struct expr_int *, char *, struct expr_int *);
 struct expr_bool * SubstBool(struct expr_bool *, char *, struct expr_int *);
 /*
- * WP 与 VC 生成接口：
- * - WP(c, Q): 计算命令 c 对后置条件 Q 的弱前条件
- * - GenerateVCs(p): 基于不变式等生成 VC 列表，并追加顶层契约 require -> WP(c, ensure)
+ * 正向符号执行与 VC 生成接口：
+ * - SP(c, P): 计算命令 c 在入口断言 P 下的最强后条件（符号执行）
+ * - GenerateVCsForward(p): 基于不变式等生成 VC 列表（初始化/保持/退出）
  */
-struct expr_bool * WP(struct cmd *, struct expr_bool *);
 struct vc_list;
-struct vc_list * GenerateVCs(struct full_annotated_cmd *);
+struct expr_bool * SP(struct cmd *, struct expr_bool *);
+struct vc_list * GenerateVCsForward(struct full_annotated_cmd *);
+struct expr_bool * SP(struct cmd *, struct expr_bool *);
+struct vc_list * GenerateVCsForward(struct full_annotated_cmd *);
 /*
  * 打印接口：
  * - PrintExprInt/PrintExprBool: 打印整数表达式与断言表达式（中缀格式）

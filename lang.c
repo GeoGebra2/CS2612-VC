@@ -16,6 +16,7 @@
 
 struct vc_list;
 static void vc_append(struct vc_list * l, struct expr_bool * f);
+static struct vc_list * new_vc_list();
 
 /*
  * 分配整数表达式节点；失败时直接退出
@@ -409,32 +410,107 @@ static struct expr_bool * mk_not(struct expr_bool * a) {
   return TPropUnOp(T_NOT, a);
 }
 
-/*
- * 收集顺序前缀中的赋值等式（形式：x == e'），用于生成 while 初始化 VC 的“入口态”
- */
-static struct expr_bool * collect_assign_equalities(struct cmd * c) {
-  if (c == NULL) return TTrue();
-  switch (c->t) {
-    case T_ASGN:
-      return TCmp(T_EQ, TVar(clone_string(c->d.ASGN.left)), PrimeExprInt(c->d.ASGN.right));
-    case T_SEQ: {
-      struct expr_bool * l = collect_assign_equalities(c->d.SEQ.left);
-      struct expr_bool * r = collect_assign_equalities(c->d.SEQ.right);
-      return mk_and(l, r);
-    }
-    case T_SKIP:
-      return TTrue();
-    case T_IF:
-    case T_WHILE:
-      return TTrue();
-  }
-  return TTrue();
+static struct expr_bool * mk_or(struct expr_bool * a, struct expr_bool * b) {
+  return TPropBinOp(T_OR, a, b);
 }
 
-/*
- * 改进版 VC 生成：支持示例风格（入口态为前缀赋值等式，保持为关系式）
- */
-static void vc_cmd2(struct cmd * c, struct expr_bool * pre, struct expr_bool * post, struct vc_list * vcs, int skip_while_init) {
+static void print_annotation(const char * label, struct expr_bool * e) {
+  printf("//@ [%s] ", label);
+  PrintExprBool(e);
+  printf("\n");
+}
+
+static int ends_with_prime(const char * s) {
+  if (s == NULL) return 0;
+  size_t n = strlen(s);
+  return n > 0 && s[n-1] == '\'';
+}
+
+struct name_list { char ** items; size_t size; size_t cap; };
+
+static void nl_init(struct name_list * nl) { nl->items = NULL; nl->size = 0; nl->cap = 0; }
+
+static void nl_add(struct name_list * nl, const char * name) {
+  for (size_t i = 0; i < nl->size; i++) {
+    if (strcmp(nl->items[i], name) == 0) return;
+  }
+  if (nl->size == nl->cap) {
+    size_t ncap = nl->cap == 0 ? 8 : nl->cap * 2;
+    char ** nitems = (char **) malloc(ncap * sizeof(char *));
+    if (nitems == NULL) { printf("Failure in malloc.\n"); exit(0); }
+    for (size_t i = 0; i < nl->size; i++) nitems[i] = nl->items[i];
+    if (nl->items) free(nl->items);
+    nl->items = nitems;
+    nl->cap = ncap;
+  }
+  nl->items[nl->size++] = clone_string((char *)name);
+}
+
+static void collect_primes_int(struct name_list * nl, struct expr_int * e) {
+  if (e == NULL) return;
+  switch (e->t) {
+    case T_CONST: return;
+    case T_VAR: if (ends_with_prime(e->d.VAR.name)) nl_add(nl, e->d.VAR.name); return;
+    case T_BINOP: collect_primes_int(nl, e->d.BINOP.left); collect_primes_int(nl, e->d.BINOP.right); return;
+  }
+}
+
+static void collect_primes_bool(struct name_list * nl, struct expr_bool * b) {
+  if (b == NULL) return;
+  switch (b->t) {
+    case T_TRUE: case T_FALSE: return;
+    case T_CMP: collect_primes_int(nl, b->d.CMP.left); collect_primes_int(nl, b->d.CMP.right); return;
+    case T_PROP_BINOP: collect_primes_bool(nl, b->d.PROP_BINOP.left); collect_primes_bool(nl, b->d.PROP_BINOP.right); return;
+    case T_PROP_UNOP: collect_primes_bool(nl, b->d.PROP_UNOP.arg); return;
+    case T_QUANT: collect_primes_bool(nl, b->d.QUANT.arg); return;
+  }
+}
+
+static struct expr_bool * exists_wrap(struct expr_bool * b) {
+  struct name_list nl; nl_init(&nl);
+  collect_primes_bool(&nl, b);
+  struct expr_bool * r = CloneExprBool(b);
+  for (size_t i = 0; i < nl.size; i++) {
+    r = TQuant(T_EXISTS, nl.items[i], r);
+  }
+  return r;
+}
+
+
+static struct expr_bool * rename_in_bool(struct expr_bool * P, char * x) {
+  return SubstBool(P, x, TVar(prime_string(x)));
+}
+
+static struct expr_bool * var_eq_prime_expr(char * x, struct expr_int * e) {
+  return TCmp(T_EQ, PrimeExprInt(e), TVar(clone_string(x)));
+}
+
+struct expr_bool * SP(struct cmd * c, struct expr_bool * P) {
+  if (c == NULL) return CloneExprBool(P);
+  switch (c->t) {
+    case T_ASGN: {
+      struct expr_bool * rel = var_eq_prime_expr(c->d.ASGN.left, c->d.ASGN.right);
+      struct expr_bool * pre_renamed = rename_in_bool(P, c->d.ASGN.left);
+      return mk_and(rel, pre_renamed);
+    }
+    case T_SKIP:
+      return CloneExprBool(P);
+    case T_SEQ: {
+      struct expr_bool * mid = SP(c->d.SEQ.left, P);
+      return SP(c->d.SEQ.right, mid);
+    }
+    case T_IF: {
+      struct expr_bool * then_part = mk_and(PrimeExprBool(CloneExprBool(c->d.IF.cond)), SP(c->d.IF.left, CloneExprBool(P)));
+      struct expr_bool * else_part = mk_and(mk_not(PrimeExprBool(CloneExprBool(c->d.IF.cond))), SP(c->d.IF.right, CloneExprBool(P)));
+      return mk_or(then_part, else_part);
+    }
+    case T_WHILE:
+      return CloneExprBool(P);
+  }
+  return NULL;
+}
+
+static void vc_forward(struct cmd * c, struct expr_bool * pre, struct expr_bool * post, struct vc_list * vcs) {
   if (c == NULL) return;
   switch (c->t) {
     case T_ASGN:
@@ -442,78 +518,94 @@ static void vc_cmd2(struct cmd * c, struct expr_bool * pre, struct expr_bool * p
     case T_SKIP:
       return;
     case T_SEQ: {
-      struct expr_bool * post_left = WP(c->d.SEQ.right, CloneExprBool(post));
-      vc_cmd2(c->d.SEQ.left, CloneExprBool(pre), post_left, vcs, 0);
-      struct expr_bool * pre_right = WP(c->d.SEQ.left, CloneExprBool(post_left));
-      if (c->d.SEQ.right && c->d.SEQ.right->t == T_WHILE) {
-        struct expr_bool * entry_eqs = collect_assign_equalities(c->d.SEQ.left);
-        struct expr_bool * init_lhs = mk_and(CloneExprBool(pre), entry_eqs);
-        vc_append(vcs, mk_imply(init_lhs, CloneExprBool(c->d.SEQ.right->d.WHILE.inv)));
-        vc_cmd2(c->d.SEQ.right, pre_right, CloneExprBool(post), vcs, 1);
-      } else {
-        vc_cmd2(c->d.SEQ.right, pre_right, CloneExprBool(post), vcs, 0);
-      }
+      struct expr_bool * mid = SP(c->d.SEQ.left, CloneExprBool(pre));
+      vc_forward(c->d.SEQ.left, CloneExprBool(pre), CloneExprBool(post), vcs);
+      vc_forward(c->d.SEQ.right, mid, CloneExprBool(post), vcs);
       return;
     }
     case T_IF: {
       struct expr_bool * pre_then = mk_and(CloneExprBool(pre), CloneExprBool(c->d.IF.cond));
       struct expr_bool * pre_else = mk_and(CloneExprBool(pre), mk_not(CloneExprBool(c->d.IF.cond)));
-      vc_cmd2(c->d.IF.left, pre_then, CloneExprBool(post), vcs, 0);
-      vc_cmd2(c->d.IF.right, pre_else, CloneExprBool(post), vcs, 0);
+      vc_forward(c->d.IF.left, pre_then, CloneExprBool(post), vcs);
+      vc_forward(c->d.IF.right, pre_else, CloneExprBool(post), vcs);
       return;
     }
     case T_WHILE: {
-      if (!skip_while_init) {
-        vc_append(vcs, mk_imply(CloneExprBool(pre), CloneExprBool(c->d.WHILE.inv)));
-      }
-      struct expr_bool * pre_body = mk_and(CloneExprBool(c->d.WHILE.inv), CloneExprBool(c->d.WHILE.cond));
-      struct expr_bool * rel_pre = PrimeExprBool(pre_body);
-      struct expr_bool * rel_eq = TTrue();
-      if (c->d.WHILE.body && c->d.WHILE.body->t == T_ASGN) {
-        rel_eq = TCmp(T_EQ,
-                      TVar(clone_string(c->d.WHILE.body->d.ASGN.left)),
-                      PrimeExprInt(c->d.WHILE.body->d.ASGN.right));
-      }
-      struct expr_bool * rel_lhs = mk_and(rel_eq, rel_pre);
-      vc_append(vcs, mk_imply(rel_lhs, CloneExprBool(c->d.WHILE.inv)));
+      struct expr_bool * entry = CloneExprBool(pre);
+      vc_append(vcs, mk_imply(entry, CloneExprBool(c->d.WHILE.inv)));
+      struct expr_bool * inv_cond = mk_and(CloneExprBool(c->d.WHILE.inv), CloneExprBool(c->d.WHILE.cond));
+      struct expr_bool * lhs = SP(c->d.WHILE.body, PrimeExprBool(inv_cond));
+      vc_append(vcs, mk_imply(lhs, CloneExprBool(c->d.WHILE.inv)));
       vc_append(vcs, mk_imply(mk_and(CloneExprBool(c->d.WHILE.inv), mk_not(CloneExprBool(c->d.WHILE.cond))), CloneExprBool(post)));
       return;
     }
   }
 }
 
-/*
- * 弱前条件 WP：给定命令 c 与后置条件 Q，返回满足正确性的前置条件
- * 规则：
- * - 赋值：wp(x:=e, Q) = SubstBool(Q, x, e)
- * - skip：wp(skip, Q) = Q
- * - 顺序：wp(c1;c2, Q) = wp(c1, wp(c2, Q))
- * - 条件：wp(if b then c1 else c2, Q) = (b -> wp(c1, Q)) && (!b -> wp(c2, Q))
- * - 循环：返回循环不变式 inv（VC 另行生成）
- */
-struct expr_bool * WP(struct cmd * c, struct expr_bool * Q) {
-  if (c == NULL) return CloneExprBool(Q);
+static struct expr_bool * collect_assign_equalities_fwd(struct cmd * c) {
+  if (c == NULL) return TTrue();
   switch (c->t) {
     case T_ASGN:
-      return SubstBool(Q, c->d.ASGN.left, c->d.ASGN.right);
-    case T_SKIP:
-      return CloneExprBool(Q);
+      return TCmp(T_EQ, PrimeExprInt(c->d.ASGN.right), TVar(clone_string(c->d.ASGN.left)));
     case T_SEQ: {
-      struct expr_bool * Q2 = WP(c->d.SEQ.right, Q);
-      struct expr_bool * Q1 = WP(c->d.SEQ.left, Q2);
-      return Q1;
+      struct expr_bool * l = collect_assign_equalities_fwd(c->d.SEQ.left);
+      struct expr_bool * r = collect_assign_equalities_fwd(c->d.SEQ.right);
+      return TPropBinOp(T_AND, l, r);
     }
-    case T_IF: {
-      struct expr_bool * wpl = WP(c->d.IF.left, CloneExprBool(Q));
-      struct expr_bool * wpr = WP(c->d.IF.right, CloneExprBool(Q));
-      struct expr_bool * a = mk_imply(CloneExprBool(c->d.IF.cond), wpl);
-      struct expr_bool * b = mk_imply(mk_not(CloneExprBool(c->d.IF.cond)), wpr);
-      return mk_and(a, b);
-    }
+    case T_SKIP:
+    case T_IF:
     case T_WHILE:
-      return CloneExprBool(c->d.WHILE.inv);
+      return TTrue();
   }
-  return NULL;
+  return TTrue();
+}
+
+static void PrintAnnotatedProgramForward(struct full_annotated_cmd * p) {
+  printf("//@ require ");
+  PrintExprBool(p->require);
+  printf("\n");
+  printf("//@ ensure ");
+  PrintExprBool(p->ensure);
+  printf("\n");
+  struct cmd * c = &(p->c);
+  if (c->t == T_SEQ && c->d.SEQ.right && c->d.SEQ.right->t == T_WHILE) {
+    if (c->d.SEQ.left && c->d.SEQ.left->t == T_ASGN) {
+      PrintCmd(c->d.SEQ.left);
+      printf(";\n");
+      struct expr_bool * entry_eq = collect_assign_equalities_fwd(c->d.SEQ.left);
+      struct expr_bool * entry = TPropBinOp(T_AND, entry_eq, CloneExprBool(p->require));
+      print_annotation("generated", entry);
+    } else {
+      PrintCmd(c->d.SEQ.left);
+      printf(";\n");
+    }
+    printf("//@ inv ");
+    PrintExprBool(c->d.SEQ.right->d.WHILE.inv);
+    printf("\n");
+    printf("while (");
+    PrintExprBool(c->d.SEQ.right->d.WHILE.cond);
+    printf(") do\n");
+    printf("{\n");
+    struct expr_bool * inv_cond = TPropBinOp(T_AND, CloneExprBool(c->d.SEQ.right->d.WHILE.inv), CloneExprBool(c->d.SEQ.right->d.WHILE.cond));
+    print_annotation("generated", inv_cond);
+    PrintCmd(c->d.SEQ.right->d.WHILE.body);
+    printf("\n");
+    struct expr_bool * lhs = SP(c->d.SEQ.right->d.WHILE.body, PrimeExprBool(inv_cond));
+    print_annotation("generated", exists_wrap(lhs));
+    print_annotation("target", CloneExprBool(c->d.SEQ.right->d.WHILE.inv));
+    printf("}\n");
+    struct expr_bool * exit_cond = TPropBinOp(T_AND, CloneExprBool(c->d.SEQ.right->d.WHILE.inv), TPropUnOp(T_NOT, CloneExprBool(c->d.SEQ.right->d.WHILE.cond)));
+    print_annotation("generated", exit_cond);
+  } else {
+    PrintCmd(&(p->c));
+    printf("\n");
+  }
+}
+
+struct vc_list * GenerateVCsForward(struct full_annotated_cmd * p) {
+  struct vc_list * vcs = new_vc_list();
+  vc_forward(&(p->c), CloneExprBool(p->require), CloneExprBool(p->ensure), vcs);
+  return vcs;
 }
 
 /*
@@ -569,57 +661,9 @@ static void vc_append(struct vc_list * l, struct expr_bool * f) {
   l->size++;
 }
 
-/*
- * 按结构遍历命令 c，基于入口 pre 与出口 post 生成局部 VC：
- * - 赋值/skip：无局部 VC（由 WP 在顶层契约涵盖）
- * - 顺序：分别计算左右子命令的进入/退出并递归
- * - 条件：拆分为 then 与 else 分支的局部 VC
- * - 循环：生成初始化（pre->inv）、保持（inv∧cond->wp(body,inv)）、退出（inv∧!cond->post）
- */
-static void vc_cmd(struct cmd * c, struct expr_bool * pre, struct expr_bool * post, struct vc_list * vcs) {
-  if (c == NULL) return;
-  switch (c->t) {
-    case T_ASGN:
-      return;
-    case T_SKIP:
-      return;
-    case T_SEQ: {
-      struct expr_bool * post_left = WP(c->d.SEQ.right, CloneExprBool(post));
-      vc_cmd(c->d.SEQ.left, CloneExprBool(pre), post_left, vcs);
-      struct expr_bool * pre_right = WP(c->d.SEQ.left, CloneExprBool(post_left));
-      vc_cmd(c->d.SEQ.right, pre_right, CloneExprBool(post), vcs);
-      return;
-    }
-    case T_IF: {
-      struct expr_bool * pre_then = mk_and(CloneExprBool(pre), CloneExprBool(c->d.IF.cond));
-      struct expr_bool * pre_else = mk_and(CloneExprBool(pre), mk_not(CloneExprBool(c->d.IF.cond)));
-      vc_cmd(c->d.IF.left, pre_then, CloneExprBool(post), vcs);
-      vc_cmd(c->d.IF.right, pre_else, CloneExprBool(post), vcs);
-      return;
-    }
-    case T_WHILE: {
-      vc_append(vcs, mk_imply(CloneExprBool(pre), CloneExprBool(c->d.WHILE.inv)));
-      struct expr_bool * body_wp = WP(c->d.WHILE.body, CloneExprBool(c->d.WHILE.inv));
-      vc_append(vcs, mk_imply(mk_and(CloneExprBool(c->d.WHILE.inv), CloneExprBool(c->d.WHILE.cond)), body_wp));
-      vc_append(vcs, mk_imply(mk_and(CloneExprBool(c->d.WHILE.inv), mk_not(CloneExprBool(c->d.WHILE.cond))), CloneExprBool(post)));
-      struct expr_bool * pre_body = mk_and(CloneExprBool(c->d.WHILE.inv), CloneExprBool(c->d.WHILE.cond));
-      struct expr_bool * post_body = CloneExprBool(c->d.WHILE.inv);
-      vc_cmd(c->d.WHILE.body, pre_body, post_body, vcs);
-      return;
-    }
-  }
-}
+ 
 
-/*
- * 生成完整 VC 列表：
- * 1) 对内部循环等生成局部 VC
- * 2) 追加顶层契约 require -> WP(c, ensure)
- */
-struct vc_list * GenerateVCs(struct full_annotated_cmd * p) {
-  struct vc_list * vcs = new_vc_list();
-  vc_cmd2(&(p->c), CloneExprBool(p->require), CloneExprBool(p->ensure), vcs, 0);
-  return vcs;
-}
+ 
 
 /*
  * 打印整数表达式（中缀格式）
@@ -643,6 +687,7 @@ static void print_expr_int(struct expr_int * e) {
         case T_PLUS: printf("+"); break;
         case T_MINUS: printf("-"); break;
         case T_MUL: printf("*"); break;
+        case T_DIV: printf("/"); break;
       }
       print_expr_int(e->d.BINOP.right);
       printf(")");
@@ -801,7 +846,7 @@ int main() {
   p1.require = req1;
   p1.ensure = ens1;
   p1.c = *c1;
-  struct vc_list * vcs1 = GenerateVCs(&p1);
+  struct vc_list * vcs1 = GenerateVCsForward(&p1);
   printf("Program 1 AST:\n");
   PrintProgram(&p1);
   printf("Program 1 VCs:\n");
@@ -826,7 +871,7 @@ int main() {
   p2.require = req2;
   p2.ensure = ens2;
   p2.c = *c2;
-  struct vc_list * vcs2 = GenerateVCs(&p2);
+  struct vc_list * vcs2 = GenerateVCsForward(&p2);
   printf("Program 2 AST:\n");
   PrintProgram(&p2);
   printf("Program 2 VCs:\n");
@@ -843,10 +888,49 @@ int main() {
   p3.require = req3;
   p3.ensure = ens3;
   p3.c = *c3;
-  struct vc_list * vcs3 = GenerateVCs(&p3);
+  struct vc_list * vcs3 = GenerateVCsForward(&p3);
   printf("Program 3 AST:\n");
   PrintProgram(&p3);
+  printf("Program 3 Annotated:\n");
+  PrintAnnotatedProgramForward(&p3);
   printf("Program 3 VCs:\n");
   PrintVCs(vcs3);
+  
+  struct expr_bool * req4 = TTrue();
+  struct expr_bool * inv4 = TPropBinOp(T_AND,
+    TPropBinOp(T_AND,
+      TCmp(T_LE, TBinOp(T_MUL, TVar("l"), TVar("l")), TVar("n")),
+      TCmp(T_LT, TVar("n"), TBinOp(T_MUL, TVar("r"), TVar("r")))
+    ),
+    TPropBinOp(T_AND,
+      TCmp(T_LE, TBinOp(T_PLUS, TVar("l"), TConst(1)), TVar("r")),
+      TCmp(T_EQ, TVar("x"), TVar("n"))
+    )
+  );
+  struct expr_bool * cond4 = TCmp(T_LT, TBinOp(T_PLUS, TVar("l"), TConst(1)), TVar("r"));
+  struct cmd * pre4 = TSeq(
+    TAsgn("x", TVar("n")),
+    TSeq(TAsgn("l", TConst(0)), TAsgn("r", TBinOp(T_PLUS, TVar("n"), TConst(1))))
+  );
+  struct expr_int * half = TBinOp(T_DIV, TBinOp(T_PLUS, TVar("l"), TVar("r")), TConst(2));
+  struct expr_bool * ifcond = TCmp(T_LT, TVar("x"), TBinOp(T_MUL, TVar("mid"), TVar("mid")));
+  struct cmd * body4 = TSeq(
+    TAsgn("mid", half),
+    TIf(ifcond, TAsgn("r", TVar("mid")), TAsgn("l", TVar("mid")))
+  );
+  struct cmd * c4 = TSeq(pre4, TWhile(inv4, cond4, body4));
+  struct expr_bool * ens4 = TPropBinOp(T_AND,
+    TCmp(T_LE, TBinOp(T_MUL, TVar("l"), TVar("l")), TVar("n")),
+    TCmp(T_LT, TVar("n"), TBinOp(T_MUL, TBinOp(T_PLUS, TVar("l"), TConst(1)), TBinOp(T_PLUS, TVar("l"), TConst(1))))
+  );
+  struct full_annotated_cmd p4;
+  p4.require = req4;
+  p4.ensure = ens4;
+  p4.c = *c4;
+  struct vc_list * vcs4 = GenerateVCsForward(&p4);
+  printf("Program 4 Annotated:\n");
+  PrintAnnotatedProgramForward(&p4);
+  printf("Program 4 VCs:\n");
+  PrintVCs(vcs4);
   return 0;
 }
