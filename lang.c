@@ -201,51 +201,57 @@ struct expr_bool * CloneExprBool(struct expr_bool * b) {
   return NULL;
 }
 
-struct expr_int * SubstInt(struct expr_int * E, char * x, struct expr_int * e) {
+struct expr_int * SubstInt(struct expr_int * E, char * x) {
   if (E == NULL) return NULL;
   switch (E->t) {
     case T_CONST:
       return TConst(E->d.CONST.value);
     case T_VAR:
-      if (E->d.VAR.name != NULL && x != NULL && strcmp(E->d.VAR.name, x) == 0)
-        return CloneExprInt(e);
+      if (E->d.VAR.name != NULL && x != NULL && strcmp(E->d.VAR.name, x) == 0){
+        char* quote = clone_string(x);
+        strcat(quote,"'");
+        return TVar(quote);
+      }
       else
         return TVar(clone_string(E->d.VAR.name));
     case T_BINOP:
       return TBinOp(E->d.BINOP.op,
-                    SubstInt(E->d.BINOP.left, x, e),
-                    SubstInt(E->d.BINOP.right, x, e));
+                    SubstInt(E->d.BINOP.left, x),
+                    SubstInt(E->d.BINOP.right, x));
   }
   return NULL;
 }
 
-struct expr_bool * SubstBool(struct expr_bool * Q, char * x, struct expr_int * e) {
-  if (Q == NULL) return NULL;
-  switch (Q->t) {
+struct expr_bool * SubstBool(struct expr_bool * P, char * x) {
+  if (P == NULL) return NULL;
+  switch (P->t) {
     case T_TRUE:
       return TTrue();
     case T_FALSE:
       return TFalse();
     case T_CMP:
-      return TCmp(Q->d.CMP.op,
-                  SubstInt(Q->d.CMP.left, x, e),
-                  SubstInt(Q->d.CMP.right, x, e));
+      return TCmp(P->d.CMP.op,
+                  SubstInt(P->d.CMP.left, x),
+                  SubstInt(P->d.CMP.right, x));
     case T_PROP_BINOP:
-      return TPropBinOp(Q->d.PROP_BINOP.op,
-                        SubstBool(Q->d.PROP_BINOP.left, x, e),
-                        SubstBool(Q->d.PROP_BINOP.right, x, e));
+      return TPropBinOp(P->d.PROP_BINOP.op,
+                        SubstBool(P->d.PROP_BINOP.left, x),
+                        SubstBool(P->d.PROP_BINOP.right, x));
     case T_PROP_UNOP:
-      return TPropUnOp(Q->d.PROP_UNOP.op,
-                       SubstBool(Q->d.PROP_UNOP.arg, x, e));
+      return TPropUnOp(P->d.PROP_UNOP.op,
+                       SubstBool(P->d.PROP_UNOP.arg, x));
     case T_QUANT:
-      if (Q->d.QUANT.name != NULL && x != NULL && strcmp(Q->d.QUANT.name, x) == 0)
-        return TQuant(Q->d.QUANT.op,
-                      clone_string(Q->d.QUANT.name),
-                      CloneExprBool(Q->d.QUANT.arg));
+      if (P->d.QUANT.name != NULL && x != NULL && strcmp(P->d.QUANT.name, x) == 0){
+        char * quote = clone_string(P->d.QUANT.name);
+        strcat(quote,"'");
+        return TQuant(P->d.QUANT.op,
+                      quote,
+                      SubstBool(P->d.QUANT.arg, x));
+        }
       else
-        return TQuant(Q->d.QUANT.op,
-                      clone_string(Q->d.QUANT.name),
-                      SubstBool(Q->d.QUANT.arg, x, e));
+        return TQuant(P->d.QUANT.op,
+                      clone_string(P->d.QUANT.name),
+                      SubstBool(P->d.QUANT.arg, x));
   }
   return NULL;
 }
@@ -254,37 +260,16 @@ static struct expr_bool * mk_and(struct expr_bool * a, struct expr_bool * b) {
   return TPropBinOp(T_AND, a, b);
 }
 
+static struct expr_bool * mk_or(struct expr_bool * a, struct expr_bool * b) {
+  return TPropBinOp(T_OR, a, b);
+}
+
 static struct expr_bool * mk_imply(struct expr_bool * a, struct expr_bool * b) {
   return TPropBinOp(T_IMPLY, a, b);
 }
 
 static struct expr_bool * mk_not(struct expr_bool * a) {
   return TPropUnOp(T_NOT, a);
-}
-
-struct expr_bool * WP(struct cmd * c, struct expr_bool * Q) {
-  if (c == NULL) return CloneExprBool(Q);
-  switch (c->t) {
-    case T_ASGN:
-      return SubstBool(Q, c->d.ASGN.left, c->d.ASGN.right);
-    case T_SKIP:
-      return CloneExprBool(Q);
-    case T_SEQ: {
-      struct expr_bool * Q2 = WP(c->d.SEQ.right, Q);
-      struct expr_bool * Q1 = WP(c->d.SEQ.left, Q2);
-      return Q1;
-    }
-    case T_IF: {
-      struct expr_bool * wpl = WP(c->d.IF.left, CloneExprBool(Q));
-      struct expr_bool * wpr = WP(c->d.IF.right, CloneExprBool(Q));
-      struct expr_bool * a = mk_imply(CloneExprBool(c->d.IF.cond), wpl);
-      struct expr_bool * b = mk_imply(mk_not(CloneExprBool(c->d.IF.cond)), wpr);
-      return mk_and(a, b);
-    }
-    case T_WHILE:
-      return CloneExprBool(c->d.WHILE.inv);
-  }
-  return NULL;
 }
 
 struct vc_node {
@@ -328,45 +313,37 @@ static void vc_append(struct vc_list * l, struct expr_bool * f) {
   l->size++;
 }
 
-static void vc_cmd(struct cmd * c, struct expr_bool * pre, struct expr_bool * post, struct vc_list * vcs) {
-  if (c == NULL) return;
+struct expr_bool * P2Q(struct cmd* c, struct expr_bool * P, struct vc_list * vcs){
+  if (c == NULL) return P;
   switch (c->t) {
     case T_ASGN:
-      return;
+      return mk_and(TCmp(T_EQ, SubstInt(CloneExprInt(c->d.ASGN.right), clone_string(c->d.ASGN.left)), TVar(clone_string(c->d.ASGN.left))), SubstBool(P, c->d.ASGN.left));
     case T_SKIP:
-      return;
+      return CloneExprBool(P);
     case T_SEQ: {
-      struct expr_bool * post_left = WP(c->d.SEQ.right, CloneExprBool(post));
-      vc_cmd(c->d.SEQ.left, CloneExprBool(pre), post_left, vcs);
-      struct expr_bool * pre_right = WP(c->d.SEQ.left, CloneExprBool(post_left));
-      vc_cmd(c->d.SEQ.right, pre_right, CloneExprBool(post), vcs);
-      return;
+      struct expr_bool * rightPre = P2Q(c->d.SEQ.left, P, vcs);
+      return P2Q((c->d.SEQ.right),rightPre, vcs);
     }
     case T_IF: {
-      struct expr_bool * pre_then = mk_and(CloneExprBool(pre), CloneExprBool(c->d.IF.cond));
-      struct expr_bool * pre_else = mk_and(CloneExprBool(pre), mk_not(CloneExprBool(c->d.IF.cond)));
-      vc_cmd(c->d.IF.left, pre_then, CloneExprBool(post), vcs);
-      vc_cmd(c->d.IF.right, pre_else, CloneExprBool(post), vcs);
-      return;
+      struct expr_bool * thenPre = mk_and(CloneExprBool(P), CloneExprBool(c->d.IF.cond));
+      struct expr_bool * elsePre = mk_and(CloneExprBool(P), mk_not(CloneExprBool(c->d.IF.cond)));
+      return mk_or(thenPre, elsePre);
     }
     case T_WHILE: {
-      vc_append(vcs, mk_imply(CloneExprBool(pre), CloneExprBool(c->d.WHILE.inv)));
-      struct expr_bool * body_wp = WP(c->d.WHILE.body, CloneExprBool(c->d.WHILE.inv));
-      vc_append(vcs, mk_imply(mk_and(CloneExprBool(c->d.WHILE.inv), CloneExprBool(c->d.WHILE.cond)), body_wp));
-      vc_append(vcs, mk_imply(mk_and(CloneExprBool(c->d.WHILE.inv), mk_not(CloneExprBool(c->d.WHILE.cond))), CloneExprBool(post)));
-      struct expr_bool * pre_body = mk_and(CloneExprBool(c->d.WHILE.inv), CloneExprBool(c->d.WHILE.cond));
-      struct expr_bool * post_body = CloneExprBool(c->d.WHILE.inv);
-      vc_cmd(c->d.WHILE.body, pre_body, post_body, vcs);
-      return;
+      vc_append(vcs, mk_imply(CloneExprBool(P), CloneExprBool(c->d.WHILE.inv)));
+      struct expr_bool * bodyPre = mk_and(CloneExprBool(c->d.WHILE.cond), CloneExprBool(c->d.WHILE.inv));
+      struct expr_bool * bodyPost = P2Q(c->d.WHILE.body, bodyPre, vcs);
+      vc_append(vcs, mk_imply(bodyPost, CloneExprBool(c->d.WHILE.inv)));
+      return mk_and(CloneExprBool(c->d.WHILE.inv), mk_not(CloneExprBool(c->d.WHILE.cond)));
     }
   }
+  return NULL;
 }
 
 struct vc_list * GenerateVCs(struct full_annotated_cmd * p) {
   struct vc_list * vcs = new_vc_list();
-  vc_cmd(&(p->c), CloneExprBool(p->require), CloneExprBool(p->ensure), vcs);
-  struct expr_bool * wp_top = WP(&(p->c), CloneExprBool(p->ensure));
-  vc_append(vcs, mk_imply(CloneExprBool(p->require), wp_top));
+  struct expr_bool * totalQ = P2Q(&(p->c), CloneExprBool(p->require), vcs);
+  vc_append(vcs, mk_imply(totalQ, CloneExprBool(p->ensure)));
   return vcs;
 }
 

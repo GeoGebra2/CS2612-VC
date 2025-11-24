@@ -132,11 +132,11 @@ struct cmd * TWhile(struct expr_bool *, struct expr_bool *, struct cmd *);
 
 struct expr_int * CloneExprInt(struct expr_int *);
 struct expr_bool * CloneExprBool(struct expr_bool *);
-struct expr_int * SubstInt(struct expr_int *, char *, struct expr_int *);
-struct expr_bool * SubstBool(struct expr_bool *, char *, struct expr_int *);
-struct expr_bool * WP(struct cmd *, struct expr_bool *);
+struct expr_int * SubstInt(struct expr_int *, char *);
+struct expr_bool * SubstBool(struct expr_bool *, char *);
 struct vc_list;
 struct vc_list * GenerateVCs(struct full_annotated_cmd *);
+struct expr_bool * P2Q(struct cmd *, struct expr_bool *, struct vc_list *);
 void PrintExprInt(struct expr_int *);
 void PrintExprBool(struct expr_bool *);
 void PrintVCs(struct vc_list *);
