@@ -531,5 +531,23 @@ int main() {
   PrintProgram(&p2);
   printf("Program 2 VCs:\n");
   PrintVCs(vcs2);
+
+  struct expr_bool * req3 = TTrue();
+  struct expr_bool * inv3 = TCmp(T_LE, TVar("x"), TConst(10));
+  struct expr_bool * cond3 = TCmp(T_LT, TVar("x"), TConst(10));
+  struct cmd * pre3 = TAsgn("x", TConst(0));
+  struct cmd * body3 = TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1)));
+  struct cmd * c3 = TSeq(pre3, TWhile(inv3, cond3, body3));
+  struct expr_bool * ens3 = TCmp(T_EQ, TVar("x"), TConst(10));
+  struct full_annotated_cmd p3;
+  p3.require = req3;
+  p3.ensure = ens3;
+  p3.c = *c3;
+  struct vc_list * vcs3 = GenerateVCs(&p3);
+  printf("Program 3 AST:\n");
+  PrintProgram(&p3);
+  printf("Program 3 VCs:\n");
+  PrintVCs(vcs3);
+
   return 0;
 }
