@@ -327,7 +327,9 @@ struct expr_bool * P2Q(struct cmd* c, struct expr_bool * P, struct vc_list * vcs
     case T_IF: {
       struct expr_bool * thenPre = mk_and(CloneExprBool(P), CloneExprBool(c->d.IF.cond));
       struct expr_bool * elsePre = mk_and(CloneExprBool(P), mk_not(CloneExprBool(c->d.IF.cond)));
-      return mk_or(thenPre, elsePre);
+      struct expr_bool * thenQ = P2Q(c->d.IF.left, thenPre, vcs);
+      struct expr_bool * elseQ = P2Q(c->d.IF.right, elsePre, vcs);
+      return mk_or(thenQ, elseQ);
     }
     case T_WHILE: {
       vc_append(vcs, mk_imply(CloneExprBool(P), CloneExprBool(c->d.WHILE.inv)));
