@@ -1,0 +1,1 @@
+prog(and(eq(var(i), const(0)), eq(var(s), const(0))), while(and(le(var(i), var(n)), eq(var(s), var(i))), lt(var(i), var(n)), seq(asgn(s, plus(var(s), const(1))), asgn(i, plus(var(i), const(1))))), eq(var(s), var(n)))

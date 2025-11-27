@@ -143,4 +143,7 @@ void PrintVCs(struct vc_list *);
 void PrintCmd(struct cmd *);
 void PrintProgram(struct full_annotated_cmd *);
 
+int EqualExprInt(struct expr_int *, struct expr_int *);
+int EqualExprBool(struct expr_bool *, struct expr_bool *);
+
 #endif // LANG_H_INCLUDED
