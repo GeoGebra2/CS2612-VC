@@ -1,0 +1,7 @@
+//@ require i1 >= 0
+//@ ensure i1 == 3
+i1 = 0;
+//@ inv i1 <= 3
+while (i1 < 3) do {
+  i1 = i1 + 1;
+}

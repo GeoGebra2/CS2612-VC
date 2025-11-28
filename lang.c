@@ -2,6 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "lang.h"
+#ifdef _WIN32
+#include <io.h>
+#endif
 
 struct expr_int * new_expr_int_ptr() {
   struct expr_int * res =
@@ -1134,7 +1137,6 @@ static struct cmd * seq_append(struct cmd *a, struct cmd *b) {
 
 static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv) {
   p_skip(p);
-  printf("[hl] cmd at '%c'\n", p->s[p->i] ? p->s[p->i] : '#');
   if (p->s[p->i] == '/' && p->s[p->i+1] == '/' && p->s[p->i+2] == '@') {
     p->i += 3;
     p_skip(p);
@@ -1149,29 +1151,29 @@ static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv
     if (!p_expect(p, ')')) return NULL;
     p_match_kw(p, "do");
     if (!p_expect(p, '{')) return NULL;
+    struct expr_bool * ann = *pending_inv ? *pending_inv : NULL;
+    *pending_inv = NULL;
     struct cmd * body = NULL;
     for (;;) {
       p_skip(p);
       if (p_expect(p, '}')) break;
       struct cmd * one = hl_parse_cmd(p, pending_inv);
       if (one) body = seq_append(body, one);
+      else {
+        p_skip(p);
+        if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+      }
     }
-    struct expr_bool * inv = *pending_inv ? *pending_inv : TTrue();
-    *pending_inv = NULL;
-    printf("[hl] while inv chosen: ");
-    print_expr_bool(inv);
-    printf("\n");
+    struct expr_bool * inv = ann ? ann : TTrue();
     return TWhile(inv, cond, body ? body : TSkip());
   }
   char * name = p_ident(p);
   if (name) {
     p_skip(p);
-    printf("[hl] ident %s, next char '%c'\n", name, p->s[p->i] ? p->s[p->i] : '#');
     if (p->s[p->i] == '=' && p->s[p->i+1] != '=') {
       p->i++;
       struct expr_int * rhs = hl_parse_int_expr(p);
       p_expect(p, ';');
-      printf("[hl] asgn %s\n", name);
       return TAsgn(name, rhs);
     }
   }
@@ -1197,22 +1199,17 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
           size_t start = k; while (p->s[k] && p->s[k] != '\n' && p->s[k] != '\r') k++;
           size_t len = k - start; char * buf = (char*)malloc(len + 1); memcpy(buf, p->s + start, len); buf[len] = '\0';
           struct expr_bool * b = hl_parse_bool_text(buf);
-          if (b) { require = b; printf("[hl] set require (pre): "); PrintExprBool(require); printf("\n"); }
+          if (b) { require = b; }
           free(buf);
         } else if (strncmp(p->s + k, "ensure", 6) == 0) {
           k += 6; while (p->s[k] == ' ' || p->s[k] == '\t') k++;
           size_t start = k; while (p->s[k] && p->s[k] != '\n' && p->s[k] != '\r') k++;
           size_t len = k - start; char * buf = (char*)malloc(len + 1); memcpy(buf, p->s + start, len); buf[len] = '\0';
           struct expr_bool * b = hl_parse_bool_text(buf);
-          if (b) { ensure = b; printf("[hl] set ensure (pre): "); PrintExprBool(ensure); printf("\n"); }
+          if (b) { ensure = b; }
           free(buf);
         } else if (strncmp(p->s + k, "inv", 3) == 0) {
-          k += 3; while (p->s[k] == ' ' || p->s[k] == '\t') k++;
-          size_t start = k; while (p->s[k] && p->s[k] != '\n' && p->s[k] != '\r') k++;
-          size_t len = k - start; char * buf = (char*)malloc(len + 1); memcpy(buf, p->s + start, len); buf[len] = '\0';
-          struct expr_bool * b = hl_parse_bool_text(buf);
-          if (b) { pending_inv = b; printf("[hl] set inv (pre): "); PrintExprBool(pending_inv); printf("\n"); }
-          free(buf);
+          while (p->s[k] && p->s[k] != '\n' && p->s[k] != '\r') k++;
         }
       }
       while (p->s[k] && p->s[k] != '\n') k++;
@@ -1222,11 +1219,10 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
   for (;;) {
     p_skip(p);
     if (!p->s[p->i]) break;
-    printf("[hl] top at '%c'\n", p->s[p->i] ? p->s[p->i] : '#');
     if (p->s[p->i] == '/' && p->s[p->i+1] == '/' && p->s[p->i+2] == '@') {
       p->i += 3;
       p_skip(p);
-      if (p_match_kw(p, "require")) { p_skip(p); require = hl_parse_bool(p); printf("[hl] set require: "); PrintExprBool(require); printf("\n"); hl_skip_line(p); continue; }
+      if (p_match_kw(p, "require")) { p_skip(p); require = hl_parse_bool(p); hl_skip_line(p); continue; }
       if (p_match_kw(p, "ensure")) {
         p_skip(p);
         size_t start = p->i;
@@ -1237,7 +1233,6 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
         memcpy(buf, p->s + start, len);
         buf[len] = '\0';
         ensure = hl_parse_bool_text(buf);
-        printf("[hl] set ensure: "); PrintExprBool(ensure); printf("\n");
         free(buf);
         hl_skip_line(p);
         continue;
@@ -1252,7 +1247,6 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
         memcpy(buf, p->s + start, len);
         buf[len] = '\0';
         pending_inv = hl_parse_bool_text(buf);
-        printf("[hl] set inv: "); PrintExprBool(pending_inv); printf("\n");
         free(buf);
         hl_skip_line(p);
         continue;
@@ -1268,13 +1262,12 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
           size_t old = p->i;
           p->i = j + 3;
           p_skip(p);
-          if (p_match_kw(p, "require")) { p_skip(p); require = hl_parse_bool_text(p->s + p->i); printf("[hl] set require: "); PrintExprBool(require); printf("\n"); hl_skip_line(p); handled = 1; break; }
+          if (p_match_kw(p, "require")) { p_skip(p); require = hl_parse_bool_text(p->s + p->i); hl_skip_line(p); handled = 1; break; }
           if (p_match_kw(p, "ensure")) {
             p_skip(p);
             size_t start = p->i; size_t end = start; while (p->s[end] && p->s[end] != '\n' && p->s[end] != '\r') end++;
             size_t len = end - start; char * buf = (char *) malloc(len + 1); memcpy(buf, p->s + start, len); buf[len] = '\0';
             ensure = hl_parse_bool_text(buf);
-            printf("[hl] set ensure: "); PrintExprBool(ensure); printf("\n");
             free(buf);
             hl_skip_line(p); handled = 1; break;
           }
@@ -1283,7 +1276,6 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
             size_t start = p->i; size_t end = start; while (p->s[end] && p->s[end] != '\n' && p->s[end] != '\r') end++;
             size_t len = end - start; char * buf = (char *) malloc(len + 1); memcpy(buf, p->s + start, len); buf[len] = '\0';
             pending_inv = hl_parse_bool_text(buf);
-            printf("[hl] set inv: "); PrintExprBool(pending_inv); printf("\n");
             free(buf);
             hl_skip_line(p); handled = 1; break;
           }
@@ -1295,7 +1287,6 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
       if (handled) continue;
     }
     struct cmd * c = hl_parse_cmd(p, &pending_inv);
-    if (c) printf("[hl] parsed cmd type %d\n", c->t);
     if (c) seq = seq_append(seq, c);
     else {
       size_t save = p->i;
@@ -1308,7 +1299,6 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
           p_expect(p, ';');
           struct cmd * ac = TAsgn(name, rhs);
           seq = seq_append(seq, ac);
-          printf("[hl] fallback asgn %s\n", name);
           continue;
         }
       }
@@ -1328,7 +1318,38 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
 
 int main(int argc, char **argv) {
   if (argc >= 2) {
-    char * text = read_all(argv[1]);
+    const char *arg = argv[1];
+#ifdef _WIN32
+    struct _finddata_t fd; char pattern[1024];
+    snprintf(pattern, sizeof(pattern), "%s\\*.txt", arg);
+    intptr_t h = _findfirst(pattern, &fd);
+    if (h != -1) {
+      int first = 1; int cont = 0;
+      do {
+        char path[1024];
+        snprintf(path, sizeof(path), "%s\\%s", arg, fd.name);
+        char * text = read_all(path);
+        if (!text) { cont = _findnext(h, &fd); continue; }
+        struct parse p; p.s = text; p.i = 0;
+        struct full_annotated_cmd prog_out; int ok = 0;
+        p_skip(&p);
+        if (p_match_kw(&p, "prog")) { p.i = 0; ok = parse_prog(&p, &prog_out); }
+        else { p.i = 0; ok = parse_hl_prog(&p, &prog_out); }
+        if (ok) {
+          if (!first) { printf("==========\n"); }
+          first = 0;
+          struct vc_list * vcs = GenerateVCs(&prog_out);
+          PrintProgram(&prog_out);
+          PrintVCs(vcs);
+        }
+        free(text);
+        cont = _findnext(h, &fd);
+      } while (cont == 0);
+      _findclose(h);
+      return 0;
+    }
+#endif
+    char * text = read_all(arg);
     if (!text) { printf("Failed to read input file.\n"); return 1; }
     struct parse p; p.s = text; p.i = 0;
     struct full_annotated_cmd prog_out;

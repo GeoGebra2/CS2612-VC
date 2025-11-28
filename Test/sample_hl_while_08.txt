@@ -1,0 +1,7 @@
+//@ require true
+//@ ensure x == 8
+x = 1;
+//@ inv x <= 8
+while (x < 8) do {
+  x = x * 2;
+}
