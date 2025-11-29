@@ -1,0 +1,4 @@
+//@ require true
+//@ ensure (x + y == 6)
+x = 1;
+y = 5;

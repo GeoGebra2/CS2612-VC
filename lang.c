@@ -151,7 +151,7 @@ struct cmd * TWhile(struct expr_bool * inv,
 static char * clone_string(const char * s) {
   if (s == NULL) return NULL;
   size_t n = strlen(s);
-  char * r = (char *) malloc(n + 1);
+  char * r = (char *) malloc(n + 2);
   if (r == NULL) {
     printf("Failure in malloc.\n");
     exit(0);
@@ -242,11 +242,9 @@ struct expr_bool * SubstBool(struct expr_bool * P, char * x) {
                        SubstBool(P->d.PROP_UNOP.arg, x));
     case T_QUANT:
       if (P->d.QUANT.name != NULL && x != NULL && strcmp(P->d.QUANT.name, x) == 0){
-        char * quote = clone_string(P->d.QUANT.name);
-        strcat(quote,"'");
         return TQuant(P->d.QUANT.op,
-                      quote,
-                      SubstBool(P->d.QUANT.arg, x));
+                      clone_string(P->d.QUANT.name),
+                      CloneExprBool(P->d.QUANT.arg));
         }
       else
         return TQuant(P->d.QUANT.op,
@@ -550,6 +548,218 @@ int main() {
   PrintProgram(&p3);
   printf("Program 3 VCs:\n");
   PrintVCs(vcs3);
+
+
+  struct cmd * c01 = TAsgn("x", TConst(0));
+  struct expr_bool * req01 = TTrue();
+  struct expr_bool * ens01 = TCmp(T_EQ, TVar("x"), TConst(0));
+  struct full_annotated_cmd p01;
+  p01.require = req01;
+  p01.ensure = ens01;
+  p01.c = *c01;
+  struct vc_list * vcs01 = GenerateVCs(&p01);
+  printf("Program 01 AST:\n");
+  PrintProgram(&p01);
+  printf("Program 01 VCs:\n");
+  PrintVCs(vcs01);
+
+  struct expr_bool * inv02 = TPropBinOp(T_AND,
+    TCmp(T_LE, TVar("x"), TConst(10)),
+    TCmp(T_EQ, TBinOp(T_PLUS, TVar("x"), TVar("y")), TConst(10))
+  );
+  struct expr_bool * cond02 = TCmp(T_LT, TVar("x"), TConst(10));
+  struct cmd * body02 = TSeq(
+    TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1))),
+    TAsgn("y", TBinOp(T_MINUS, TVar("y"), TConst(1)))
+  );
+  struct cmd * while02 = TWhile(inv02, cond02, body02);
+  struct cmd * c02 = TSeq(TSeq(TAsgn("x", TConst(0)), TAsgn("y", TConst(10))),while02);
+  struct expr_bool * req02 = TTrue();
+  struct expr_bool * ens02 = TCmp(T_EQ, TVar("x"), TConst(10));
+  struct full_annotated_cmd p02;
+  p02.require = req02;
+  p02.ensure = ens02;
+  p02.c = *c02;
+  struct vc_list * vcs02 = GenerateVCs(&p02);
+  printf("Program 02 AST:\n");
+  PrintProgram(&p02);
+  printf("Program 02 VCs:\n");
+  PrintVCs(vcs02);
+
+  struct expr_bool * inv03 = TCmp(T_LE, TVar("x"), TVar("n"));
+  struct expr_bool * cond03 = TCmp(T_LT, TVar("x"), TVar("n"));
+  struct cmd * body03 = TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1)));
+  struct cmd * while03 = TWhile(inv03, cond03, body03);
+  struct cmd * c03 = TSeq(TSeq(TAsgn("x", TConst(0)), TAsgn("n", TConst(5))),while03);
+  struct expr_bool * req03 = TCmp(T_GE, TVar("x"), TConst(0));
+  struct expr_bool * ens03 = TCmp(T_EQ, TVar("x"), TVar("n"));
+  struct full_annotated_cmd p03;
+  p03.require = req03;
+  p03.ensure = ens03;
+  p03.c = *c03;
+  struct vc_list * vcs03 = GenerateVCs(&p03);
+  printf("Program 03 AST:\n");
+  PrintProgram(&p03);
+  printf("Program 03 VCs:\n");
+  PrintVCs(vcs03);
+
+  // 计算x和y的绝对值
+  struct cmd * abs_x = TIf(
+      TCmp(T_LT, TVar("x"), TConst(0)),
+      TAsgn("x", TBinOp(T_MINUS, TConst(0), TVar("x"))),  // x := 0 - x
+      TAsgn("x", TVar("x"))  // x := x (保持不变)
+  );
+
+  struct cmd * abs_y = TIf(
+      TCmp(T_LT, TVar("y"), TConst(0)),
+      TAsgn("y", TBinOp(T_MINUS, TConst(0), TVar("y"))),
+      TAsgn("y", TVar("y"))
+  );
+
+  struct cmd * c_abs = TSeq(
+          TSeq(
+              TAsgn("x", TBinOp(T_MINUS, TConst(0), TConst(5))),  // x := -5
+              TAsgn("y", TConst(3))                                // y := 3
+          ),
+          TSeq(abs_x, abs_y)
+  );
+
+  struct expr_bool * req_abs = TQuant(T_EXISTS, "x0", TCmp(T_EQ, TVar("x0"), TVar("x")));
+
+  struct expr_bool * ens_abs = mk_and(
+      TCmp(T_GE, TVar("x"), TConst(0)),
+      TCmp(T_GE, TVar("y"), TConst(0))
+  );
+
+  struct full_annotated_cmd p_abs;
+  p_abs.require = req_abs;
+  p_abs.ensure = ens_abs;
+  p_abs.c = *c_abs;
+
+  struct vc_list * vcs_abs = GenerateVCs(&p_abs);
+  printf("\n=== Program Absolute AST ===\n");
+  PrintProgram(&p_abs);
+  printf("\n=== Program Absolute VCs ===\n");
+  PrintVCs(vcs_abs);
+
+  // Program 04: While 循环中包含 If 语句
+  struct expr_bool * inv04 = TPropBinOp(T_AND,
+      TCmp(T_GE, TVar("a"), TConst(0)),
+      TCmp(T_GE, TVar("b"), TConst(0))
+  );
+
+  struct expr_bool * cond04 = mk_and(
+      TCmp(T_GT, TVar("a"), TConst(0)),
+      TCmp(T_GT, TVar("b"), TConst(0))
+  );
+
+  // While 循环体中包含 If
+  struct cmd * body04 = TIf(
+      TCmp(T_GT, TVar("a"), TVar("b")),
+      TAsgn("a", TBinOp(T_MINUS, TVar("a"), TConst(1))),  // a > b 则 a--
+      TAsgn("b", TBinOp(T_MINUS, TVar("b"), TConst(1)))   // a <= b 则 b--
+  );
+
+  struct cmd * while04 = TWhile(inv04, cond04, body04);
+
+  struct cmd * c04 = TSeq(
+      TSeq(
+          TAsgn("a", TConst(8)),
+          TAsgn("b", TConst(5))
+      ),
+      while04
+  );
+
+  struct expr_bool * req04 = TTrue();
+
+  struct expr_bool * ens04 = mk_or(
+      TCmp(T_EQ, TVar("a"), TConst(0)),
+      TCmp(T_EQ, TVar("b"), TConst(0))
+  );
+
+  struct full_annotated_cmd p04;
+  p04.require = req04;
+  p04.ensure = ens04;
+  p04.c = *c04;
+
+  struct vc_list * vcs04 = GenerateVCs(&p04);
+  printf("\n=== Program 04: While with If AST ===\n");
+  PrintProgram(&p04);
+  printf("\n=== Program 04 VCs ===\n");
+  PrintVCs(vcs04);
+
+  // Program 05: 条件中包含量词
+  // 功能：初始化数组求和的抽象版本
+  // 前置条件使用存在量词，循环不变式使用全称量词
+  struct expr_bool * req05 = TQuant(T_EXISTS, "n0",
+      mk_and(
+          TCmp(T_EQ, TVar("n0"), TVar("n")),
+          TCmp(T_GT, TVar("n"), TConst(0))
+      )
+  );
+
+  // 循环不变式：forall k. (k < i -> sum >= k)
+  struct expr_bool * inv05 = mk_and(
+      TPropBinOp(T_AND,
+        TCmp(T_GT, TVar("n"), TConst(0)),
+        TPropBinOp(T_AND, 
+          TCmp(T_LE, TVar("i"), TVar("n")),
+          TCmp(T_GE, TVar("i"), TConst(0))
+        )
+      ),
+      TQuant(T_FORALL, "k",
+          mk_imply(
+              TCmp(T_LT, TVar("k"), TVar("i")),
+              TCmp(T_GE, TVar("sum"), TVar("k"))
+          )
+      )
+  );
+
+  struct expr_bool * cond05 = TCmp(T_LT, TVar("i"), TVar("n"));
+
+  struct cmd * body05 = TSeq(
+      TAsgn("sum", TBinOp(T_PLUS, TVar("sum"), TVar("i"))),
+      TAsgn("i", TBinOp(T_PLUS, TVar("i"), TConst(1)))
+  );
+
+  struct cmd * while05 = TWhile(inv05, cond05, body05);
+
+  struct cmd * c05 = TSeq(
+      TSeq(
+          TSeq(
+              TAsgn("n", TConst(5)),
+              TSeq(
+                TAsgn("i", TConst(0)),
+                TAsgn("n0", TBinOp(T_PLUS, TVar("n0"),TConst(1)))
+              )
+          ),
+          TAsgn("sum", TConst(0))
+      ),
+      while05
+  );
+
+  // 后置条件：exists s. (s == n && sum >= 0)
+  struct expr_bool * ens05 = TQuant(T_EXISTS, "s",
+      mk_and(
+          TCmp(T_EQ, TVar("s"), TVar("n")),
+          mk_and(
+              TCmp(T_GE, TVar("sum"), TConst(0)),
+              TCmp(T_EQ, TVar("i"), TVar("n"))
+          )
+      )
+  );
+
+  struct full_annotated_cmd p05;
+  p05.require = req05;
+  p05.ensure = ens05;
+  p05.c = *c05;
+
+  struct vc_list * vcs05 = GenerateVCs(&p05);
+  printf("\n=== Program 05: Quantifiers in Conditions AST ===\n");
+  PrintProgram(&p05);
+  printf("\n=== Program 05 VCs ===\n");
+  PrintVCs(vcs05);
+
 
   return 0;
 }

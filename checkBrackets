@@ -1,0 +1,102 @@
+{ require true }
+((a := 8; b := 5);
+ while ((a>0&&b>0)) 
+ invariant (a>=0&&b>=0) 
+ do 
+ if (a>b) 
+    then a := (a-1) 
+    else b := (b-1))
+{ ensure ((a==0&&b>0)||(a>0&&b==0)) }
+
+=== Program 04 VCs ===
+VC 1: ((5==b&&(8==a&&true))->(a>=0&&b>=0))
+VC 2: 
+(
+    (
+        (
+            (a'-1)==a&&
+            (
+                (
+                    (a'>0&&b>0)
+                    &&(a'>=0&&b>=0)
+                )&&a'>b
+            )
+        )||
+        (
+            (b'-1)==b&&
+            (
+                (
+                    (a>0&&b'>0)&&
+                    (a>=0&&b'>=0)
+                )&&
+                !a>b'
+            )
+        )
+    )->
+    (a>=0&&b>=0)
+)
+VC 3: (((a>=0&&b>=0)&&!(a>0&&b>0))->(a==0||b==0))
+
+
+=== Program 05: Quantifiers in Conditions AST ===
+{ require exists n0. (n0==n&&n>0) }
+(((n := 5; 
+    (i := 0; 
+        n0 := (n0+1))); 
+        sum := 0); 
+        while (i<n) 
+            invariant ((n>=0&&(i<=n&&i>=0))&&forall k. (k<i->sum>=k)) 
+        do 
+        (sum := (sum+i); 
+        i := (i+1)))
+{ ensure exists s. (s==n&&(sum>=0&&i==n)) }
+
+=== Program 05 VCs ===
+VC 1: 
+(
+    (0==sum&&
+        (
+            (n0'+1)==n0&&
+                (0==i&&
+                    (5==n&& exists n0. (n0==n'&&n'>0) )
+                )
+        )
+    )->
+    (
+        (n>0&& (i<=n&&i>=0)) &&
+            forall k. (k<i->sum>=k)
+    )
+)
+VC 2: 
+(
+    (
+        (i'+1)==i&&
+            (
+                (sum'+i')==sum&&
+                (
+                    i'<n&&
+                    (
+                        (n>0&& (i'<=n&&i'>=0))&&
+                            forall k. (k<i'->sum'>=k)
+                    )
+                )
+            )
+    )->
+    (
+        (n>0&& (i<=n&&i>=0))
+        &&forall k. (k<i->sum>=k)
+    )
+)
+VC 3: 
+(
+    (
+        (
+            (
+                n>0&&(i<=n&&i>=0)
+            )&&
+            forall k. (k<i->sum>=k)
+        )&&
+        !i<n
+    )->
+    exists s. (s==n&&(sum>=0&&i==n))
+)

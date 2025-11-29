@@ -1,0 +1,8 @@
+//@ require x >= 0
+//@ ensure x == n
+x = 0;
+n = 5;
+//@ inv x <= n
+while (x < n) do {
+  x = x + 1;
+}
