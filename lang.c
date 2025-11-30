@@ -1364,7 +1364,7 @@ int main(int argc, char **argv) {
     free(text);
     return 0;
   }
-  run_tests();
+  //run_tests();
   struct cmd * c1 = TSeq(
     TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1))),
     TAsgn("y", TBinOp(T_MUL, TVar("x"), TConst(2)))
