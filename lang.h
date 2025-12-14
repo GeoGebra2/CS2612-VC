@@ -58,6 +58,10 @@ enum CmdType {
   T_WHILE
 };
 
+enum VC {
+  T_VC = 0
+};
+
 struct expr_int {
   enum ExprIntType t;
   union {
@@ -86,6 +90,12 @@ struct expr_bool {
             char * name;
             struct expr_bool * arg; } QUANT;
   } d;
+};
+
+struct expr_vc {
+  struct {enum VC vc;
+          struct expr_bool * left;
+          struct expr_bool * right; } d;
 };
 
 struct cmd {
