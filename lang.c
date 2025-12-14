@@ -719,6 +719,10 @@ static struct expr_bool * hl_parse_bool_primary2(struct parse *p);
 static struct expr_int * hl_parse_int_factor2(struct parse *p);
 static struct expr_int * hl_parse_int_expr(struct parse *p);
 
+struct inv_node { struct expr_bool * inv; struct inv_node * next; };
+static void inv_push(struct inv_node **stk, struct expr_bool *b) { struct inv_node *n = (struct inv_node*)malloc(sizeof(struct inv_node)); if (!n) { printf("Failure in malloc.\n"); exit(0); } n->inv = b; n->next = *stk; *stk = n; }
+static struct expr_bool * inv_pop(struct inv_node **stk) { if (!stk || !*stk) return NULL; struct inv_node *n = *stk; *stk = n->next; struct expr_bool *b = n->inv; free(n); return b; }
+
 static int hl_match_sym(struct parse *p, const char *sym) {
   p_skip(p);
   size_t j = 0;
@@ -865,8 +869,8 @@ static struct expr_bool * hl_parse_bool_iff(struct parse *p) {
 static struct expr_bool * hl_parse_bool(struct parse *p) { return hl_parse_bool_iff(p); }
 
 static void hl_skip_line(struct parse *p) {
-  while (p->s[p->i] && p->s[p->i] != '\n') p->i++;
-  if (p->s[p->i] == '\n') p->i++;
+  while (p->s[p->i] && p->s[p->i] != '\n' && p->s[p->i] != '\r') p->i++;
+  while (p->s[p->i] == '\n' || p->s[p->i] == '\r') p->i++;
 }
 
 static char * str_trim_copy(const char *s) {
@@ -942,14 +946,31 @@ static struct cmd * seq_append(struct cmd *a, struct cmd *b) {
   return TSeq(a, b);
 }
 
-static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv) {
+static struct cmd * hl_parse_cmd(struct parse *p, struct inv_node **invstk) {
   p_skip(p);
+  
   if (p->s[p->i] == '/' && p->s[p->i+1] == '/' && p->s[p->i+2] == '@') {
     p->i += 3;
     p_skip(p);
-    if (p_match_kw(p, "inv")) { p_skip(p); struct expr_bool * inv = hl_parse_bool(p); *pending_inv = inv; hl_skip_line(p); return NULL; }
-    hl_skip_line(p);
-    return NULL;
+    if (p_match_kw(p, "inv")) {
+      p_skip(p);
+      size_t start = p->i;
+      size_t end = start;
+      while (p->s[end] && p->s[end] != '\n' && p->s[end] != '\r') end++;
+      size_t len = end - start;
+      char * buf = (char *) malloc(len + 1);
+      memcpy(buf, p->s + start, len);
+      buf[len] = '\0';
+      struct expr_bool * inv = hl_parse_bool_text(buf);
+      free(buf);
+      inv_push(invstk, inv);
+      hl_skip_line(p);
+      p_skip(p);
+      /* continue to parse the following command in the same call */
+    } else {
+      hl_skip_line(p);
+      return NULL;
+    }
   }
   if (p_match_kw(p, "skip")) { p_expect(p, ';'); return TSkip(); }
   if (p_match_kw(p, "while")) {
@@ -958,17 +979,173 @@ static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv
     if (!p_expect(p, ')')) return NULL;
     p_match_kw(p, "do");
     if (!p_expect(p, '{')) return NULL;
-    struct expr_bool * ann = *pending_inv ? *pending_inv : NULL;
-    *pending_inv = NULL;
+    struct expr_bool * ann = inv_pop(invstk);
     struct cmd * body = NULL;
     for (;;) {
       p_skip(p);
       if (p_expect(p, '}')) break;
-      struct cmd * one = hl_parse_cmd(p, pending_inv);
+      /* handle pattern: //@ inv ... followed by a nested while */
+      {
+        size_t pre = p->i;
+        if (p->s[p->i] == '/' && p->s[p->i+1] == '/' && p->s[p->i+2] == '@') {
+          p->i += 3;
+          p_skip(p);
+          if (p_match_kw(p, "inv")) {
+            p_skip(p);
+            size_t start2 = p->i;
+            size_t end2 = start2;
+            while (p->s[end2] && p->s[end2] != '\n' && p->s[end2] != '\r') end2++;
+            size_t len2 = end2 - start2;
+            char * buf2 = (char *) malloc(len2 + 1);
+            memcpy(buf2, p->s + start2, len2);
+            buf2[len2] = '\0';
+            struct expr_bool * inv_line = hl_parse_bool_text(buf2);
+            free(buf2);
+          inv_push(invstk, inv_line);
+          hl_skip_line(p);
+          p_skip(p);
+          if (p_match_kw(p, "while")) {
+              if (!p_expect(p, '(')) return NULL;
+              struct expr_bool * c2 = hl_parse_bool(p);
+              if (!p_expect(p, ')')) return NULL;
+              p_match_kw(p, "do");
+              if (!p_expect(p, '{')) return NULL;
+              struct expr_bool * a2 = inv_pop(invstk);
+              struct cmd * b2 = NULL;
+              for (;;) {
+                p_skip(p);
+                if (p_expect(p, '}')) break;
+                size_t before2 = p->i;
+                struct cmd * o2 = hl_parse_cmd(p, invstk);
+                if (o2) b2 = seq_append(b2, o2);
+                else {
+                  if (p->i == before2) {
+                    p_skip(p);
+                    if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+                    else if (p->s[p->i] == '}') p->i++;
+                  }
+                }
+              }
+              struct expr_bool * inv2 = a2 ? a2 : TTrue();
+              struct cmd * w2 = TWhile(inv2, c2, b2 ? b2 : TSkip());
+              body = seq_append(body, w2);
+              continue;
+            }
+          }
+          p->i = pre;
+        }
+      }
+      /* prioritize nested while detection */
+      {
+        size_t save = p->i;
+        if (p_match_kw(p, "while")) {
+          if (!p_expect(p, '(')) return NULL;
+          struct expr_bool * c2 = hl_parse_bool(p);
+          if (!p_expect(p, ')')) return NULL;
+          p_match_kw(p, "do");
+          if (!p_expect(p, '{')) return NULL;
+          struct expr_bool * a2 = inv_pop(invstk);
+          struct cmd * b2 = NULL;
+          for (;;) {
+            p_skip(p);
+            if (p_expect(p, '}')) break;
+            size_t before2 = p->i;
+            struct cmd * o2 = hl_parse_cmd(p, invstk);
+            if (o2) b2 = seq_append(b2, o2);
+            else {
+              if (p->i == before2) {
+                p_skip(p);
+                if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+                else if (p->s[p->i] == '}') p->i++;
+              }
+            }
+          }
+          struct expr_bool * inv2 = a2 ? a2 : TTrue();
+          struct cmd * w2 = TWhile(inv2, c2, b2 ? b2 : TSkip());
+          body = seq_append(body, w2);
+          continue;
+        }
+        p->i = save;
+      }
+      size_t before = p->i;
+      struct cmd * one = hl_parse_cmd(p, invstk);
       if (one) body = seq_append(body, one);
       else {
-        p_skip(p);
-        if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+        if (p->i == before) {
+          if (p_match_kw(p, "while")) {
+            if (!p_expect(p, '(')) return NULL;
+            struct expr_bool * c2 = hl_parse_bool(p);
+            if (!p_expect(p, ')')) return NULL;
+            p_match_kw(p, "do");
+            if (!p_expect(p, '{')) return NULL;
+            struct expr_bool * a2 = inv_pop(invstk);
+            struct cmd * b2 = NULL;
+            for (;;) {
+              p_skip(p);
+              if (p_expect(p, '}')) break;
+              size_t before2 = p->i;
+              struct cmd * o2 = hl_parse_cmd(p, invstk);
+              if (o2) b2 = seq_append(b2, o2);
+              else {
+                if (p->i == before2) {
+                  p_skip(p);
+                  if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+                  else if (p->s[p->i] == '}') p->i++;
+                }
+              }
+            }
+            struct expr_bool * inv2 = a2 ? a2 : TTrue();
+            one = TWhile(inv2, c2, b2 ? b2 : TSkip());
+            body = seq_append(body, one);
+            continue;
+          }
+          if (p_match_kw(p, "if")) {
+            if (!p_expect(p, '(')) return NULL;
+            struct expr_bool * c2 = hl_parse_bool(p);
+            if (!p_expect(p, ')')) return NULL;
+            p_match_kw(p, "then");
+            if (!p_expect(p, '{')) return NULL;
+            struct cmd * l2 = NULL;
+            for (;;) {
+              p_skip(p);
+              if (p_expect(p, '}')) break;
+              size_t before2 = p->i;
+              struct cmd * o2 = hl_parse_cmd(p, invstk);
+              if (o2) l2 = seq_append(l2, o2);
+              else {
+                if (p->i == before2) {
+                  p_skip(p);
+                  if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+                  else if (p->s[p->i] == '}') p->i++;
+                }
+              }
+            }
+            p_skip(p);
+            p_match_kw(p, "else");
+            if (!p_expect(p, '{')) return NULL;
+            struct cmd * r2 = NULL;
+            for (;;) {
+              p_skip(p);
+              if (p_expect(p, '}')) break;
+              size_t before2 = p->i;
+              struct cmd * o2 = hl_parse_cmd(p, invstk);
+              if (o2) r2 = seq_append(r2, o2);
+              else {
+                if (p->i == before2) {
+                  p_skip(p);
+                  if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+                  else if (p->s[p->i] == '}') p->i++;
+                }
+              }
+            }
+            one = TIf(c2, l2 ? l2 : TSkip(), r2 ? r2 : TSkip());
+            body = seq_append(body, one);
+            continue;
+          }
+          p_skip(p);
+          if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+          else if (p->s[p->i] == '}') p->i++;
+        }
       }
     }
     struct expr_bool * inv = ann ? ann : TTrue();
@@ -984,11 +1161,42 @@ static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv
     for (;;) {
       p_skip(p);
       if (p_expect(p, '}')) break;
-      struct cmd * one = hl_parse_cmd(p, pending_inv);
+      size_t before = p->i;
+      struct cmd * one = hl_parse_cmd(p, invstk);
       if (one) left = seq_append(left, one);
       else {
-        p_skip(p);
-        if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+        if (p->i == before) {
+          if (p_match_kw(p, "while")) {
+            if (!p_expect(p, '(')) return NULL;
+            struct expr_bool * c2 = hl_parse_bool(p);
+            if (!p_expect(p, ')')) return NULL;
+            p_match_kw(p, "do");
+            if (!p_expect(p, '{')) return NULL;
+            struct expr_bool * a2 = inv_pop(invstk);
+            struct cmd * b2 = NULL;
+            for (;;) {
+              p_skip(p);
+              if (p_expect(p, '}')) break;
+              size_t before2 = p->i;
+              struct cmd * o2 = hl_parse_cmd(p, invstk);
+              if (o2) b2 = seq_append(b2, o2);
+              else {
+                if (p->i == before2) {
+                  p_skip(p);
+                  if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+                  else if (p->s[p->i] == '}') p->i++;
+                }
+              }
+            }
+            struct expr_bool * inv2 = a2 ? a2 : TTrue();
+            one = TWhile(inv2, c2, b2 ? b2 : TSkip());
+            left = seq_append(left, one);
+            continue;
+          }
+          p_skip(p);
+          if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+          else if (p->s[p->i] == '}') p->i++;
+        }
       }
     }
     p_skip(p);
@@ -998,11 +1206,42 @@ static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv
     for (;;) {
       p_skip(p);
       if (p_expect(p, '}')) break;
-      struct cmd * one = hl_parse_cmd(p, pending_inv);
+      size_t before = p->i;
+      struct cmd * one = hl_parse_cmd(p, invstk);
       if (one) right = seq_append(right, one);
       else {
-        p_skip(p);
-        if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+        if (p->i == before) {
+          if (p_match_kw(p, "while")) {
+            if (!p_expect(p, '(')) return NULL;
+            struct expr_bool * c2 = hl_parse_bool(p);
+            if (!p_expect(p, ')')) return NULL;
+            p_match_kw(p, "do");
+            if (!p_expect(p, '{')) return NULL;
+            struct expr_bool * a2 = inv_pop(invstk);
+            struct cmd * b2 = NULL;
+            for (;;) {
+              p_skip(p);
+              if (p_expect(p, '}')) break;
+              size_t before2 = p->i;
+              struct cmd * o2 = hl_parse_cmd(p, invstk);
+              if (o2) b2 = seq_append(b2, o2);
+              else {
+                if (p->i == before2) {
+                  p_skip(p);
+                  if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+                  else if (p->s[p->i] == '}') p->i++;
+                }
+              }
+            }
+            struct expr_bool * inv2 = a2 ? a2 : TTrue();
+            one = TWhile(inv2, c2, b2 ? b2 : TSkip());
+            right = seq_append(right, one);
+            continue;
+          }
+          p_skip(p);
+          if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+          else if (p->s[p->i] == '}') p->i++;
+        }
       }
     }
     return TIf(cond, left ? left : TSkip(), right ? right : TSkip());
@@ -1010,12 +1249,81 @@ static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv
   char * name = p_ident(p);
   if (name) {
     p_skip(p);
+    if (strcmp(name, "while") == 0) {
+      free(name);
+      if (!p_expect(p, '(')) return NULL;
+      struct expr_bool * cond = hl_parse_bool(p);
+      if (!p_expect(p, ')')) return NULL;
+      p_match_kw(p, "do");
+      if (!p_expect(p, '{')) return NULL;
+      struct expr_bool * ann = inv_pop(invstk);
+      struct cmd * body = NULL;
+      for (;;) {
+        p_skip(p);
+        if (p_expect(p, '}')) break;
+        size_t before = p->i;
+        struct cmd * one = hl_parse_cmd(p, invstk);
+        if (one) body = seq_append(body, one);
+        else {
+          if (p->i == before) {
+            p_skip(p);
+            if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+            else if (p->s[p->i] == '}') p->i++;
+          }
+        }
+      }
+      struct expr_bool * inv = ann ? ann : TTrue();
+      return TWhile(inv, cond, body ? body : TSkip());
+    }
+    if (strcmp(name, "if") == 0) {
+      free(name);
+      if (!p_expect(p, '(')) return NULL;
+      struct expr_bool * cond = hl_parse_bool(p);
+      if (!p_expect(p, ')')) return NULL;
+      p_match_kw(p, "then");
+      if (!p_expect(p, '{')) return NULL;
+      struct cmd * left = NULL;
+      for (;;) {
+        p_skip(p);
+        if (p_expect(p, '}')) break;
+        size_t before = p->i;
+        struct cmd * one = hl_parse_cmd(p, invstk);
+        if (one) left = seq_append(left, one);
+        else {
+          if (p->i == before) {
+            p_skip(p);
+            if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+            else if (p->s[p->i] == '}') p->i++;
+          }
+        }
+      }
+      p_skip(p);
+      p_match_kw(p, "else");
+      if (!p_expect(p, '{')) return NULL;
+      struct cmd * right = NULL;
+      for (;;) {
+        p_skip(p);
+        if (p_expect(p, '}')) break;
+        size_t before = p->i;
+        struct cmd * one = hl_parse_cmd(p, invstk);
+        if (one) right = seq_append(right, one);
+        else {
+          if (p->i == before) {
+            p_skip(p);
+            if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+            else if (p->s[p->i] == '}') p->i++;
+          }
+        }
+      }
+      return TIf(cond, left ? left : TSkip(), right ? right : TSkip());
+    }
     if (p->s[p->i] == '=' && p->s[p->i+1] != '=') {
       p->i++;
       struct expr_int * rhs = hl_parse_int_expr(p);
       p_expect(p, ';');
       return TAsgn(name, rhs);
     }
+    free(name);
   }
   return NULL;
 }
@@ -1023,7 +1331,7 @@ static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv
 static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
   struct expr_bool * require = NULL;
   struct expr_bool * ensure = NULL;
-  struct expr_bool * pending_inv = NULL;
+  struct inv_node * invs = NULL;
   struct cmd * seq = NULL;
   /* pre-scan all lines to collect require/ensure/inv ahead of commands */
   {
@@ -1062,7 +1370,20 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
     if (p->s[p->i] == '/' && p->s[p->i+1] == '/' && p->s[p->i+2] == '@') {
       p->i += 3;
       p_skip(p);
-      if (p_match_kw(p, "require")) { p_skip(p); require = hl_parse_bool(p); hl_skip_line(p); continue; }
+      if (p_match_kw(p, "require")) {
+        p_skip(p);
+        size_t start = p->i;
+        size_t end = start;
+        while (p->s[end] && p->s[end] != '\n' && p->s[end] != '\r') end++;
+        size_t len = end - start;
+        char * buf = (char *) malloc(len + 1);
+        memcpy(buf, p->s + start, len);
+        buf[len] = '\0';
+        require = hl_parse_bool_text(buf);
+        free(buf);
+        hl_skip_line(p);
+        continue;
+      }
       if (p_match_kw(p, "ensure")) {
         p_skip(p);
         size_t start = p->i;
@@ -1086,7 +1407,7 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
         char * buf = (char *) malloc(len + 1);
         memcpy(buf, p->s + start, len);
         buf[len] = '\0';
-        pending_inv = hl_parse_bool_text(buf);
+        inv_push(&invs, hl_parse_bool_text(buf));
         free(buf);
         hl_skip_line(p);
         continue;
@@ -1115,7 +1436,7 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
             p_skip(p);
             size_t start = p->i; size_t end = start; while (p->s[end] && p->s[end] != '\n' && p->s[end] != '\r') end++;
             size_t len = end - start; char * buf = (char *) malloc(len + 1); memcpy(buf, p->s + start, len); buf[len] = '\0';
-            pending_inv = hl_parse_bool_text(buf);
+            inv_push(&invs, hl_parse_bool_text(buf));
             free(buf);
             hl_skip_line(p); handled = 1; break;
           }
@@ -1126,7 +1447,8 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
       }
       if (handled) continue;
     }
-    struct cmd * c = hl_parse_cmd(p, &pending_inv);
+    size_t before_cmd = p->i;
+    struct cmd * c = hl_parse_cmd(p, &invs);
     if (c) seq = seq_append(seq, c);
     else {
       size_t save = p->i;
@@ -1143,8 +1465,11 @@ static int parse_hl_prog(struct parse *p, struct full_annotated_cmd * out) {
         }
       }
       p->i = save;
-      p_skip(p);
-      if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+      if (p->i == before_cmd) {
+        p_skip(p);
+        if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+        else if (p->s[p->i] == '}') p->i++;
+      }
     }
   }
   if (!require) require = TTrue();

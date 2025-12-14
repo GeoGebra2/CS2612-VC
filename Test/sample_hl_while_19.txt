@@ -2,8 +2,9 @@
 //@ ensure i == m && j == n
 m = 2;
 n = 3;
-//@ inv i <= m && j <= n
+//@ inv i <= m
 while (i < m) do {
+  //@ inv j <= n
   while (j < n) do {
     s = s + 1;
     j = j + 1;
