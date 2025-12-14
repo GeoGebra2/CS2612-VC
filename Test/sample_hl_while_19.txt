@@ -1,0 +1,13 @@
+//@ require i == 0 && j == 0 && s == 0
+//@ ensure i == m && j == n
+m = 2;
+n = 3;
+//@ inv i <= m && j <= n
+while (i < m) do {
+  while (j < n) do {
+    s = s + 1;
+    j = j + 1;
+  }
+  i = i + 1;
+  j = 0;
+}

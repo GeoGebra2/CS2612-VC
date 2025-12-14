@@ -1,0 +1,7 @@
+//@ require true
+//@ ensure (z >= x && z >= y) && (z == x || z == y)
+if (x > y) then {
+  z = x;
+} else {
+  z = y;
+}

@@ -1,0 +1,7 @@
+//@ require true
+//@ ensure x == 10
+x = 0;
+//@ inv x <= 10
+while (x < 10) {
+    x = x + 1;
+}

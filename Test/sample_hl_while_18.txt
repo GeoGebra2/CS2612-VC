@@ -1,0 +1,12 @@
+//@ require true
+//@ ensure (a == 0 || b == 0)
+a = 8;
+b = 5;
+//@ inv a >= 0 && b >= 0
+while (a > 0 && b > 0) do {
+  if (a > b) {
+    a = a - 1;
+  } else {
+    b = b - 1;
+  }
+}

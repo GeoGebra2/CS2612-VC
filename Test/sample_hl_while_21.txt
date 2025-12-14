@@ -1,0 +1,7 @@
+//@ require true
+//@ ensure (z >= x*x && z >= y*y) && (z == x*x || z == y*y)
+if (x*x > y*y) {
+  z = x*x;
+} else {
+  z = y*y;
+}

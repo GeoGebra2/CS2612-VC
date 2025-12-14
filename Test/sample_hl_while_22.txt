@@ -1,0 +1,6 @@
+//@ require x >= 0 && n >= 0
+//@ ensure x*x >= n
+//@ inv x >= 0
+while (x*x < n) do {
+  x = x + 1;
+}

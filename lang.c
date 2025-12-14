@@ -427,7 +427,7 @@ static void print_expr_bool(struct expr_bool * b) {
       switch (b->d.PROP_BINOP.op) {
         case T_AND: printf("&&"); break;
         case T_OR: printf("||"); break;
-        case T_IMPLY: printf("->"); break;
+        case T_IMPLY: printf("|--"); break;
         case T_IFF: printf("<->"); break;
       }
       print_expr_bool(b->d.PROP_BINOP.right);
@@ -570,199 +570,6 @@ int EqualExprBool(struct expr_bool *a, struct expr_bool *b) {
   return 0;
 }
 
-static int tests_passed = 0;
-static int tests_failed = 0;
-
-static void record_result(int cond, const char *name) {
-  if (cond) {
-    tests_passed++;
-    printf("PASS: %s\n", name);
-  } else {
-    tests_failed++;
-    printf("FAIL: %s\n", name);
-  }
-}
-
-static void run_tests() {
-  /* 构造命令 skip
-     验证：TSkip() 生成的命令 s 满足 s != NULL 且 s->t == T_SKIP，
-     即返回的命令类型枚举值与期望相等（用于后续 P2Q skip 测试）。 */
-  {
-    struct cmd * s = TSkip();
-    record_result(s != NULL && s->t == T_SKIP, "TSkip returns T_SKIP");
-  }
-
-  /* 克隆算术表达式
-     验证：CloneExprInt(e) 产生的 c 与 e 结构相等，
-     即 EqualExprInt(e, c) == 1；包括操作符、左右子树和值均逐层相等。 */
-  {
-    struct expr_int * e = TBinOp(T_MUL,
-      TBinOp(T_PLUS, TVar("x"), TConst(1)),
-      TConst(2)
-    );
-    struct expr_int * c = CloneExprInt(e);
-    record_result(EqualExprInt(e, c), "CloneExprInt deep equality");
-  }
-
-  /* 克隆布尔表达式（含量词/逻辑联结）
-     验证：CloneExprBool(b) 产生的 c 与 b 结构相等，
-     即 EqualExprBool(b, c) == 1；覆盖量词、命题一元/二元联结等深度结构。 */
-  {
-    struct expr_bool * b = TPropBinOp(T_AND,
-      TQuant(T_FORALL, "x", TCmp(T_EQ, TVar("x"), TConst(1))),
-      TPropUnOp(T_NOT, TPropBinOp(T_IFF, TTrue(), TFalse()))
-    );
-    struct expr_bool * c = CloneExprBool(b);
-    record_result(EqualExprBool(b, c), "CloneExprBool complex equality");
-  }
-
-  /* 变量替换（算术，命中）
-     验证：SubstInt(TVar("x"), "x") 的结果 r 为 TVar("x'")，
-     即 r->t == T_VAR 且 r->d.VAR.name 与期望字符串 "x'" 相等。 */
-  {
-    struct expr_int * e = TVar("x");
-    struct expr_int * r = SubstInt(e, "x");
-    record_result(r != NULL && r->t == T_VAR && eq_str(r->d.VAR.name, "x'"), "SubstInt primes matched var");
-  }
-
-  /* 变量替换（算术，未命中）
-     验证：SubstInt(TVar("y"), "x") 的结果 r 保持不变为 TVar("y")，
-     即 r->t == T_VAR 且 r->d.VAR.name 与 "y" 相等。 */
-  {
-    struct expr_int * e = TVar("y");
-    struct expr_int * r = SubstInt(e, "x");
-    record_result(r != NULL && r->t == T_VAR && eq_str(r->d.VAR.name, "y"), "SubstInt leaves unmatched var");
-  }
-
-  /* 变量替换（布尔量词，命中）
-     验证：SubstBool(forall x. (x==1), "x") 的结果 r 同时重命名：
-     - 量词绑定名 r->d.QUANT.name == "x'"
-     - 体内同名变量也为 "x'"，即 r->d.QUANT.arg->d.CMP.left 为 TVar("x'")。 */
-  {
-    struct expr_bool * b = TQuant(T_FORALL, "x", TCmp(T_EQ, TVar("x"), TConst(1)));
-    struct expr_bool * r = SubstBool(b, "x");
-    int ok = r != NULL && r->t == T_QUANT && eq_str(r->d.QUANT.name, "x'") && r->d.QUANT.arg->t == T_CMP && r->d.QUANT.arg->d.CMP.left->t == T_VAR && eq_str(r->d.QUANT.arg->d.CMP.left->d.VAR.name, "x'");
-    record_result(ok, "SubstBool primes quant binder and body");
-  }
-
-  /* P2Q（赋值）
-     验证：令 c = (x := x+1), P = (x > 0)，Q = P2Q(c, P, vcs)
-     构造期望 expected = ((SubstInt(x+1, "x") == x) && SubstBool(P, "x"))，
-     断言 EqualExprBool(Q, expected) == 1，
-     即 Q 与期望弱前置的合取结构相等。 */
-  {
-    struct expr_bool * P = TCmp(T_GT, TVar("x"), TConst(0));
-    struct cmd * c = TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1)));
-    struct vc_list * vcs = new_vc_list();
-    struct expr_bool * Q = P2Q(c, P, vcs);
-    struct expr_bool * expected = TPropBinOp(T_AND,
-      TCmp(T_EQ, SubstInt(CloneExprInt(TBinOp(T_PLUS, TVar("x"), TConst(1))), "x"), TVar("x")),
-      SubstBool(P, "x")
-    );
-    record_result(EqualExprBool(Q, expected), "P2Q assignment shape");
-  }
-
-  /* P2Q（skip）
-     验证：令 c = skip, Q = P2Q(c, P, vcs)，则 Q 与 P 结构相等，
-     即 EqualExprBool(Q, P) == 1（skip 不改变前置）。 */
-  {
-    struct expr_bool * P = TTrue();
-    struct cmd * c = TSkip();
-    struct vc_list * vcs = new_vc_list();
-    struct expr_bool * Q = P2Q(c, P, vcs);
-    record_result(EqualExprBool(Q, P), "P2Q skip clones P");
-  }
-
-  /* P2Q（顺序）
-     验证：令 c = (skip; x := 1)，Q = P2Q(c, P, vcs)
-     右侧期望前置 rightPre = P2Q(skip, P, vcs)，
-     期望 expected = P2Q(x := 1, rightPre, vcs)，
-     断言 EqualExprBool(Q, expected) == 1，说明顺序组合传递正确。 */
-  {
-    struct expr_bool * P = TTrue();
-    struct cmd * c = TSeq(TSkip(), TAsgn("x", TConst(1)));
-    struct vc_list * vcs = new_vc_list();
-    struct expr_bool * Q = P2Q(c, P, vcs);
-    struct expr_bool * rightPre = P2Q(TSkip(), P, vcs);
-    struct expr_bool * expected = P2Q(TAsgn("x", TConst(1)), rightPre, vcs);
-    record_result(EqualExprBool(Q, expected), "P2Q seq composition");
-  }
-
-  /* P2Q（条件）
-     验证：令 c = if cond then left else right，Q = P2Q(c, P, vcs)
-     构造 thenPre = (P && cond)，elsePre = (P && !cond)
-     期望 expected = (P2Q(left, thenPre, vcs) || P2Q(right, elsePre, vcs))
-     断言 EqualExprBool(Q, expected) == 1，说明分支组合正确。 */
-  {
-    struct expr_bool * P = TTrue();
-    struct expr_bool * cond = TCmp(T_LT, TVar("x"), TConst(0));
-    struct cmd * left = TAsgn("y", TConst(1));
-    struct cmd * right = TAsgn("y", TConst(2));
-    struct cmd * c = TIf(cond, left, right);
-    struct vc_list * vcs = new_vc_list();
-    struct expr_bool * Q = P2Q(c, P, vcs);
-    struct expr_bool * thenPre = TPropBinOp(T_AND, CloneExprBool(P), CloneExprBool(cond));
-    struct expr_bool * elsePre = TPropBinOp(T_AND, CloneExprBool(P), TPropUnOp(T_NOT, CloneExprBool(cond)));
-    struct expr_bool * expected = TPropBinOp(T_OR,
-      P2Q(left, thenPre, vcs),
-      P2Q(right, elsePre, vcs)
-    );
-    record_result(EqualExprBool(Q, expected), "P2Q if branches");
-  }
-
-  /* P2Q（循环）
-     验证：令 c = while inv, cond do body，Q = P2Q(c, P, vcs)
-     - vcs->size == 2：追加两条 VC（初始化：P -> inv；保持：bodyPost -> inv）
-     - 退出前置 EqualExprBool(Q, inv && !cond) == 1：退出条件正确。 */
-  {
-    struct expr_bool * inv = TCmp(T_LE, TVar("i"), TVar("n"));
-    struct expr_bool * cond = TCmp(T_LT, TVar("i"), TVar("n"));
-    struct cmd * body = TAsgn("i", TBinOp(T_PLUS, TVar("i"), TConst(1)));
-    struct cmd * c = TWhile(inv, cond, body);
-    struct expr_bool * P = TTrue();
-    struct vc_list * vcs = new_vc_list();
-    struct expr_bool * Q = P2Q(c, P, vcs);
-    int ok = vcs->size == 2 && EqualExprBool(Q, TPropBinOp(T_AND, CloneExprBool(inv), TPropUnOp(T_NOT, CloneExprBool(cond))));
-    record_result(ok, "P2Q while adds two VCs and exit condition");
-  }
-
-  /* GenerateVCs（最终蕴含）
-     验证：令 p = {require: P, ensure: E, c}，vcs = GenerateVCs(&p)
-     取最后一条 VC（cur->f），构造 totalQ = P2Q(c, P, t_vcs)
-     期望 expected = (totalQ -> E)
-     断言 EqualExprBool(cur->f, expected) == 1，说明最终 VC 正确。 */
-  {
-    struct cmd * c = TAsgn("x", TConst(1));
-    struct expr_bool * req = TTrue();
-    struct expr_bool * ens = TCmp(T_EQ, TVar("x"), TConst(1));
-    struct full_annotated_cmd p;
-    p.require = req;
-    p.ensure = ens;
-    p.c = *c;
-    struct vc_list * vcs = GenerateVCs(&p);
-    struct vc_node * cur = vcs->head;
-    while (cur && cur->next) cur = cur->next;
-    struct vc_list * t_vcs = new_vc_list();
-    struct expr_bool * totalQ = P2Q(&(p.c), CloneExprBool(p.require), t_vcs);
-    struct expr_bool * expected = TPropBinOp(T_IMPLY, totalQ, CloneExprBool(p.ensure));
-    record_result(cur && EqualExprBool(cur->f, expected), "GenerateVCs final implication");
-  }
-
-  /* 打印冒烟
-     验证：调用 PrintExprBool/PrintExprInt/PrintCmd 可正常输出并覆盖基本分支，
-     不作结构比较，仅确认执行稳定无崩溃。 */
-  {
-    PrintExprBool(TPropBinOp(T_IFF, TTrue(), TFalse()));
-    printf("\n");
-    PrintExprInt(TBinOp(T_MINUS, TConst(3), TConst(2)));
-    printf("\n");
-    PrintCmd(TSeq(TAsgn("x", TConst(1)), TSkip()));
-    printf("\n");
-    record_result(1, "Print functions smoke");
-  }
-
-  printf("Tests passed: %d, failed: %d\n", tests_passed, tests_failed);
-}
 
 static char * read_all(const char * path) {
   FILE * f = fopen(path, "rb");
@@ -1167,6 +974,39 @@ static struct cmd * hl_parse_cmd(struct parse *p, struct expr_bool **pending_inv
     struct expr_bool * inv = ann ? ann : TTrue();
     return TWhile(inv, cond, body ? body : TSkip());
   }
+  if (p_match_kw(p, "if")) {
+    if (!p_expect(p, '(')) return NULL;
+    struct expr_bool * cond = hl_parse_bool(p);
+    if (!p_expect(p, ')')) return NULL;
+    p_match_kw(p, "then");
+    if (!p_expect(p, '{')) return NULL;
+    struct cmd * left = NULL;
+    for (;;) {
+      p_skip(p);
+      if (p_expect(p, '}')) break;
+      struct cmd * one = hl_parse_cmd(p, pending_inv);
+      if (one) left = seq_append(left, one);
+      else {
+        p_skip(p);
+        if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+      }
+    }
+    p_skip(p);
+    p_match_kw(p, "else");
+    if (!p_expect(p, '{')) return NULL;
+    struct cmd * right = NULL;
+    for (;;) {
+      p_skip(p);
+      if (p_expect(p, '}')) break;
+      struct cmd * one = hl_parse_cmd(p, pending_inv);
+      if (one) right = seq_append(right, one);
+      else {
+        p_skip(p);
+        if (p->s[p->i] && p->s[p->i] != '}') hl_skip_line(p);
+      }
+    }
+    return TIf(cond, left ? left : TSkip(), right ? right : TSkip());
+  }
   char * name = p_ident(p);
   if (name) {
     p_skip(p);
@@ -1333,10 +1173,9 @@ int main(int argc, char **argv) {
         struct parse p; p.s = text; p.i = 0;
         struct full_annotated_cmd prog_out; int ok = 0;
         p_skip(&p);
-        if (p_match_kw(&p, "prog")) { p.i = 0; ok = parse_prog(&p, &prog_out); }
-        else { p.i = 0; ok = parse_hl_prog(&p, &prog_out); }
+        p.i = 0; ok = parse_hl_prog(&p, &prog_out);
         if (ok) {
-          if (!first) { printf("==========\n"); }
+          if (!first) { printf("===================================================\n"); }
           first = 0;
           struct vc_list * vcs = GenerateVCs(&prog_out);
           PrintProgram(&prog_out);
@@ -1355,8 +1194,7 @@ int main(int argc, char **argv) {
     struct full_annotated_cmd prog_out;
     int ok = 0;
     p_skip(&p);
-    if (p_match_kw(&p, "prog")) { p.i = 0; ok = parse_prog(&p, &prog_out); }
-    else { p.i = 0; ok = parse_hl_prog(&p, &prog_out); }
+    p.i = 0; ok = parse_hl_prog(&p, &prog_out);
     if (!ok) { printf("Parse error.\n"); free(text); return 1; }
     struct vc_list * vcs = GenerateVCs(&prog_out);
     PrintProgram(&prog_out);
@@ -1364,118 +1202,6 @@ int main(int argc, char **argv) {
     free(text);
     return 0;
   }
-  //run_tests();
-  struct cmd * c1 = TSeq(
-    TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1))),
-    TAsgn("y", TBinOp(T_MUL, TVar("x"), TConst(2)))
-  );
-  struct expr_bool * req1 = TTrue();
-  struct expr_bool * ens1 = TCmp(T_EQ, TVar("y"), TBinOp(T_MUL, TVar("x"), TConst(2)));
-  struct full_annotated_cmd p1;
-  p1.require = req1;
-  p1.ensure = ens1;
-  p1.c = *c1;
-  struct vc_list * vcs1 = GenerateVCs(&p1);
-  printf("Program 1 AST:\n");
-  PrintProgram(&p1);
-  printf("Program 1 VCs:\n");
-  PrintVCs(vcs1);
-
-  struct expr_bool * inv2 = TPropBinOp(T_AND,
-    TCmp(T_LE, TVar("i"), TVar("n")),
-    TCmp(T_EQ, TVar("s"), TVar("i"))
-  );
-  struct expr_bool * cond2 = TCmp(T_LT, TVar("i"), TVar("n"));
-  struct cmd * body2 = TSeq(
-    TAsgn("s", TBinOp(T_PLUS, TVar("s"), TConst(1))),
-    TAsgn("i", TBinOp(T_PLUS, TVar("i"), TConst(1)))
-  );
-  struct cmd * c2 = TWhile(inv2, cond2, body2);
-  struct expr_bool * req2 = TPropBinOp(T_AND,
-    TCmp(T_EQ, TVar("i"), TConst(0)),
-    TCmp(T_EQ, TVar("s"), TConst(0))
-  );
-  struct expr_bool * ens2 = TCmp(T_EQ, TVar("s"), TVar("n"));
-  struct full_annotated_cmd p2;
-  p2.require = req2;
-  p2.ensure = ens2;
-  p2.c = *c2;
-  struct vc_list * vcs2 = GenerateVCs(&p2);
-  printf("Program 2 AST:\n");
-  PrintProgram(&p2);
-  printf("Program 2 VCs:\n");
-  PrintVCs(vcs2);
-
-  struct expr_bool * req3 = TTrue();
-  struct expr_bool * inv3 = TCmp(T_LE, TVar("x"), TConst(10));
-  struct expr_bool * cond3 = TCmp(T_LT, TVar("x"), TConst(10));
-  struct cmd * pre3 = TAsgn("x", TConst(0));
-  struct cmd * body3 = TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1)));
-  struct cmd * c3 = TSeq(pre3, TWhile(inv3, cond3, body3));
-  struct expr_bool * ens3 = TCmp(T_EQ, TVar("x"), TConst(10));
-  struct full_annotated_cmd p3;
-  p3.require = req3;
-  p3.ensure = ens3;
-  p3.c = *c3;
-  struct vc_list * vcs3 = GenerateVCs(&p3);
-  printf("Program 3 AST:\n");
-  PrintProgram(&p3);
-  printf("Program 3 VCs:\n");
-  PrintVCs(vcs3);
-
-
-  struct cmd * c01 = TAsgn("x", TConst(0));
-  struct expr_bool * req01 = TTrue();
-  struct expr_bool * ens01 = TCmp(T_EQ, TVar("x"), TConst(0));
-  struct full_annotated_cmd p01;
-  p01.require = req01;
-  p01.ensure = ens01;
-  p01.c = *c01;
-  struct vc_list * vcs01 = GenerateVCs(&p01);
-  printf("Program 01 AST:\n");
-  PrintProgram(&p01);
-  printf("Program 01 VCs:\n");
-  PrintVCs(vcs01);
-
-  struct expr_bool * inv02 = TPropBinOp(T_AND,
-    TCmp(T_LE, TVar("x"), TConst(10)),
-    TCmp(T_EQ, TBinOp(T_PLUS, TVar("x"), TVar("y")), TConst(10))
-  );
-  struct expr_bool * cond02 = TCmp(T_LT, TVar("x"), TConst(10));
-  struct cmd * body02 = TSeq(
-    TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1))),
-    TAsgn("y", TBinOp(T_MINUS, TVar("y"), TConst(1)))
-  );
-  struct cmd * while02 = TWhile(inv02, cond02, body02);
-  struct cmd * c02 = TSeq(TSeq(TAsgn("x", TConst(0)), TAsgn("y", TConst(10))),while02);
-  struct expr_bool * req02 = TTrue();
-  struct expr_bool * ens02 = TCmp(T_EQ, TVar("x"), TConst(10));
-  struct full_annotated_cmd p02;
-  p02.require = req02;
-  p02.ensure = ens02;
-  p02.c = *c02;
-  struct vc_list * vcs02 = GenerateVCs(&p02);
-  printf("Program 02 AST:\n");
-  PrintProgram(&p02);
-  printf("Program 02 VCs:\n");
-  PrintVCs(vcs02);
-
-  struct expr_bool * inv03 = TCmp(T_LE, TVar("x"), TVar("n"));
-  struct expr_bool * cond03 = TCmp(T_LT, TVar("x"), TVar("n"));
-  struct cmd * body03 = TAsgn("x", TBinOp(T_PLUS, TVar("x"), TConst(1)));
-  struct cmd * while03 = TWhile(inv03, cond03, body03);
-  struct cmd * c03 = TSeq(TSeq(TAsgn("x", TConst(0)), TAsgn("n", TConst(5))),while03);
-  struct expr_bool * req03 = TCmp(T_GE, TVar("x"), TConst(0));
-  struct expr_bool * ens03 = TCmp(T_EQ, TVar("x"), TVar("n"));
-  struct full_annotated_cmd p03;
-  p03.require = req03;
-  p03.ensure = ens03;
-  p03.c = *c03;
-  struct vc_list * vcs03 = GenerateVCs(&p03);
-  printf("Program 03 AST:\n");
-  PrintProgram(&p03);
-  printf("Program 03 VCs:\n");
-  PrintVCs(vcs03);
 
   // 计算x和y的绝对值
   struct cmd * abs_x = TIf(
