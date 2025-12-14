@@ -26,6 +26,16 @@ struct expr_bool * new_expr_bool_ptr() {
   return res;
 }
 
+struct expr_vc * new_expr_vc_ptr() {
+  struct expr_vc * res =
+    (struct expr_vc *) malloc(sizeof(struct expr_vc));
+  if (res == NULL) {
+    printf("Failure in malloc.\n");
+    exit(0);
+  }
+  return res;
+}
+
 struct cmd * new_cmd_ptr() {
   struct cmd * res = (struct cmd *) malloc(sizeof(struct cmd));
   if (res == NULL) {
@@ -155,6 +165,16 @@ struct cmd * TWhile(struct expr_bool * inv,
   res -> d.WHILE.inv = inv;
   res -> d.WHILE.cond = cond;
   res -> d.WHILE.body = body;
+  return res;
+}
+
+struct expr_vc * TVC(enum VC op,
+                              struct expr_bool * left,
+                              struct expr_bool * right) {
+  struct expr_vc * res = new_expr_vc_ptr();
+  res -> d.vc = op;
+  res -> d.left = left;
+  res -> d.right = right;
   return res;
 }
 
@@ -294,8 +314,12 @@ static struct expr_bool * mk_not(struct expr_bool * a) {
   return TPropUnOp(T_NOT, a);
 }
 
+static struct expr_vc * mk_vc(struct expr_bool * a, struct expr_bool * b) {
+  return TVC(T_VC, a, b);
+}
+
 struct vc_node {
-  struct expr_bool * f;
+  struct expr_vc * f;
   struct vc_node * next;
 };
 
@@ -317,7 +341,7 @@ static struct vc_list * new_vc_list() {
   return l;
 }
 
-static void vc_append(struct vc_list * l, struct expr_bool * f) {
+static void vc_append(struct vc_list * l, struct expr_vc * f) {
   struct vc_node * n = (struct vc_node *) malloc(sizeof(struct vc_node));
   if (n == NULL) {
     printf("Failure in malloc.\n");
@@ -354,10 +378,10 @@ struct expr_bool * P2Q(struct cmd* c, struct expr_bool * P, struct vc_list * vcs
       return mk_or(thenQ, elseQ);
     }
     case T_WHILE: {
-      vc_append(vcs, mk_imply(CloneExprBool(P), CloneExprBool(c->d.WHILE.inv)));
+      vc_append(vcs, mk_vc(CloneExprBool(P), CloneExprBool(c->d.WHILE.inv)));
       struct expr_bool * bodyPre = mk_and(CloneExprBool(c->d.WHILE.cond), CloneExprBool(c->d.WHILE.inv));
       struct expr_bool * bodyPost = P2Q(c->d.WHILE.body, bodyPre, vcs);
-      vc_append(vcs, mk_imply(bodyPost, CloneExprBool(c->d.WHILE.inv)));
+      vc_append(vcs, mk_vc(bodyPost, CloneExprBool(c->d.WHILE.inv)));
       return mk_and(CloneExprBool(c->d.WHILE.inv), mk_not(CloneExprBool(c->d.WHILE.cond)));
     }
   }
@@ -367,7 +391,7 @@ struct expr_bool * P2Q(struct cmd* c, struct expr_bool * P, struct vc_list * vcs
 struct vc_list * GenerateVCs(struct full_annotated_cmd * p) {
   struct vc_list * vcs = new_vc_list();
   struct expr_bool * totalQ = P2Q(&(p->c), CloneExprBool(p->require), vcs);
-  vc_append(vcs, mk_imply(totalQ, CloneExprBool(p->ensure)));
+  vc_append(vcs, mk_vc(totalQ, CloneExprBool(p->ensure)));
   return vcs;
 }
 
@@ -427,7 +451,7 @@ static void print_expr_bool(struct expr_bool * b) {
       switch (b->d.PROP_BINOP.op) {
         case T_AND: printf("&&"); break;
         case T_OR: printf("||"); break;
-        case T_IMPLY: printf("|--"); break;
+        case T_IMPLY: printf("->"); break;
         case T_IFF: printf("<->"); break;
       }
       print_expr_bool(b->d.PROP_BINOP.right);
@@ -448,15 +472,29 @@ static void print_expr_bool(struct expr_bool * b) {
   }
 }
 
+static void print_expr_vc(struct expr_vc * v) {
+  if (v == NULL) {
+    printf("null");
+    return;
+  }
+  printf("(");
+  print_expr_bool(v->d.left);
+  printf("|--");
+  print_expr_bool(v->d.right);
+  printf(")");
+  return;
+}
+
 void PrintExprInt(struct expr_int * e) { print_expr_int(e); }
 void PrintExprBool(struct expr_bool * b) { print_expr_bool(b); }
+void PrintExprVC(struct expr_vc * v) { print_expr_vc(v); }
 
 void PrintVCs(struct vc_list * l) {
   struct vc_node * cur = l->head;
   int i = 1;
   while (cur) {
     printf("VC %d: ", i);
-    print_expr_bool(cur->f);
+    print_expr_vc(cur->f);
     printf("\n");
     cur = cur->next;
     i++;
